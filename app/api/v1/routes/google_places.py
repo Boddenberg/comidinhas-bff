@@ -8,7 +8,6 @@ from app.api.dependencies import (
     get_place_details_use_case,
     get_save_from_google_use_case,
 )
-from app.api.v1.routes.profiles import get_access_token
 from app.modules.google_places.schemas import (
     NearbyRestaurantsRequest,
     NearbyRestaurantsResponse,
@@ -23,7 +22,7 @@ from app.modules.google_places.use_cases import (
     SavePlaceFromGoogleUseCase,
     SearchNearbyRestaurantsUseCase,
 )
-from app.modules.places.schemas import PlaceResponse
+from app.modules.lugares.schemas import LugarResponse
 
 router = APIRouter(prefix="/google-maps", tags=["google-maps"])
 
@@ -35,9 +34,7 @@ router = APIRouter(prefix="/google-maps", tags=["google-maps"])
 )
 async def search_nearby_restaurants(
     request: NearbyRestaurantsRequest,
-    use_case: SearchNearbyRestaurantsUseCase = Depends(
-        get_nearby_restaurants_use_case,
-    ),
+    use_case: SearchNearbyRestaurantsUseCase = Depends(get_nearby_restaurants_use_case),
 ) -> NearbyRestaurantsResponse:
     return await use_case.execute(request)
 
@@ -45,7 +42,7 @@ async def search_nearby_restaurants(
 @router.post(
     "/places/autocomplete",
     response_model=PlaceAutocompleteResponse,
-    summary="Sugestoes de lugares enquanto o usuario digita (Place Autocomplete)",
+    summary="Sugestões de lugares enquanto o usuário digita (Place Autocomplete)",
 )
 async def autocomplete_places(
     request: PlaceAutocompleteRequest,
@@ -68,13 +65,12 @@ async def get_place_details(
 
 @router.post(
     "/places/save",
-    response_model=PlaceResponse,
+    response_model=LugarResponse,
     status_code=201,
-    summary="Busca detalhes no Google Places e salva o lugar no banco de dados do grupo",
+    summary="Busca detalhes no Google Places e salva o lugar no grupo",
 )
 async def save_place_from_google(
     request: SaveFromGoogleRequest,
-    access_token: str = Depends(get_access_token),
     use_case: SavePlaceFromGoogleUseCase = Depends(get_save_from_google_use_case),
-) -> PlaceResponse:
-    return await use_case.execute(access_token=access_token, request=request)
+) -> LugarResponse:
+    return await use_case.execute(request=request)
