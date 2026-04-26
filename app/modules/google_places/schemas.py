@@ -145,7 +145,8 @@ class SaveFromGoogleRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     place_id: str = Field(..., min_length=4, max_length=500, description="Google Place ID")
-    group_id: str | None = Field(default=None, min_length=8, max_length=64)
-    status: str = Field(default="quero_ir")
-    is_favorite: bool = False
-    notes: str | None = Field(default=None, max_length=1000)
+    grupo_id: str = Field(..., min_length=8, max_length=64, description="UUID do grupo")
+    status: str = Field(default="quero_ir", pattern="^(quero_ir|fomos|quero_voltar|nao_curti)$")
+    favorito: bool = False
+    notas: str | None = Field(default=None, max_length=2000)
+    adicionado_por: str | None = Field(default=None, max_length=80)
