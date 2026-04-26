@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 import httpx
@@ -256,6 +256,507 @@ class SupabaseClient:
             context="auth_delete_my_account",
         )
 
+    # ------------------------------------------------------------------ groups
+
+    async def list_groups(self, *, access_token: str) -> list[Any]:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "groups"),
+            headers=self._headers(access_token=access_token),
+            params=[("select", "*"), ("order", "created_at.desc")],
+            context="groups_list",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao listar grupos.")
+        return payload
+
+    async def list_user_memberships(
+        self,
+        *,
+        access_token: str,
+        user_id: str,
+    ) -> list[Any]:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "group_members"),
+            headers=self._headers(access_token=access_token),
+            params=[
+                ("profile_id", f"eq.{user_id}"),
+                ("select", "group_id,role"),
+            ],
+            context="group_members_my_list",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao listar memberships.")
+        return payload
+
+    async def get_group_with_members(
+        self,
+        *,
+        access_token: str,
+        group_id: str,
+    ) -> dict[str, Any] | None:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "groups"),
+            headers=self._headers(access_token=access_token),
+            params=[
+                ("id", f"eq.{group_id}"),
+                (
+                    "select",
+                    "*,members:group_members("
+                    "role,invited_by,created_at,profile_id,"
+                    "profile:profile_id(id,full_name,username,avatar_url)"
+                    ")",
+                ),
+            ],
+            context="groups_get",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao buscar grupo.")
+        first = payload[0] if payload else None
+        return first if isinstance(first, dict) else None
+
+    async def insert_group(
+        self,
+        *,
+        access_token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self._request_json(
+            "POST",
+            self._build_url("rest", "groups"),
+            headers={
+                **self._headers(access_token=access_token),
+                "Prefer": "return=representation",
+            },
+            json=payload,
+            context="groups_insert",
+        )
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
+            raise ExternalServiceError("supabase", "O Supabase nao retornou o grupo apos a insercao.")
+        return response[0]
+
+    async def update_group(
+        self,
+        *,
+        access_token: str,
+        group_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._request(
+            "PATCH",
+            self._build_url("rest", "groups"),
+            headers=self._headers(access_token=access_token),
+            params=[("id", f"eq.{group_id}")],
+            json=payload,
+            context="groups_update",
+        )
+
+    async def delete_group(
+        self,
+        *,
+        access_token: str,
+        group_id: str,
+    ) -> None:
+        await self._request(
+            "DELETE",
+            self._build_url("rest", "groups"),
+            headers=self._headers(access_token=access_token),
+            params=[("id", f"eq.{group_id}")],
+            context="groups_delete",
+        )
+
+    # --------------------------------------------------------- group_members
+
+    async def insert_group_member(
+        self,
+        *,
+        access_token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self._request_json(
+            "POST",
+            self._build_url("rest", "group_members"),
+            headers={
+                **self._headers(access_token=access_token),
+                "Prefer": "return=representation",
+            },
+            json=payload,
+            context="group_members_insert",
+        )
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
+            raise ExternalServiceError("supabase", "O Supabase nao retornou o membro apos a insercao.")
+        return response[0]
+
+    async def delete_group_member(
+        self,
+        *,
+        access_token: str,
+        group_id: str,
+        profile_id: str,
+    ) -> None:
+        await self._request(
+            "DELETE",
+            self._build_url("rest", "group_members"),
+            headers=self._headers(access_token=access_token),
+            params=[
+                ("group_id", f"eq.{group_id}"),
+                ("profile_id", f"eq.{profile_id}"),
+            ],
+            context="group_members_delete",
+        )
+
+    # ----------------------------------------------------------------- profiles helpers
+
+    async def find_profile_by_email(
+        self,
+        *,
+        access_token: str,
+        email: str,
+    ) -> dict[str, Any] | None:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "profiles"),
+            headers=self._headers(access_token=access_token),
+            params=[
+                ("email", f"eq.{email.lower()}"),
+                ("select", "id,email,full_name,username"),
+            ],
+            context="profiles_find_by_email",
+        )
+        if not isinstance(payload, list):
+            return None
+        first = payload[0] if payload else None
+        return first if isinstance(first, dict) else None
+
+    # ------------------------------------------------------------------ places
+
+    async def list_places(
+        self,
+        *,
+        access_token: str,
+        group_id: str,
+        select: str,
+        filters: list[tuple[str, str]],
+        sort_field: str,
+        sort_descending: bool,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[Any], int]:
+        range_start = (page - 1) * page_size
+        range_end = range_start + page_size - 1
+        order_suffix = "desc" if sort_descending else "asc"
+
+        params: list[tuple[str, str]] = [
+            ("group_id", f"eq.{group_id}"),
+            ("select", select),
+            ("order", f"{sort_field}.{order_suffix}"),
+        ]
+        params.extend(filters)
+
+        response = await self._request(
+            "GET",
+            self._build_url("rest", "places"),
+            headers={
+                **self._headers(access_token=access_token),
+                "Prefer": "count=exact",
+                "Range-Unit": "items",
+                "Range": f"{range_start}-{range_end}",
+            },
+            params=params,
+            context="places_list",
+        )
+
+        total = self._parse_content_range_total(
+            response.headers.get("content-range", ""),
+        )
+        try:
+            rows = response.json() if response.content else []
+        except ValueError:
+            rows = []
+        if not isinstance(rows, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao listar lugares.")
+        return rows, total
+
+    async def get_place(
+        self,
+        *,
+        access_token: str,
+        place_id: str,
+        select: str,
+    ) -> dict[str, Any] | None:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "places"),
+            headers=self._headers(access_token=access_token),
+            params=[
+                ("id", f"eq.{place_id}"),
+                ("select", select),
+            ],
+            context="places_get",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao buscar lugar.")
+        first = payload[0] if payload else None
+        return first if isinstance(first, dict) else None
+
+    async def insert_place(
+        self,
+        *,
+        access_token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self._request_json(
+            "POST",
+            self._build_url("rest", "places"),
+            headers={
+                **self._headers(access_token=access_token),
+                "Prefer": "return=representation",
+            },
+            json=payload,
+            context="places_insert",
+        )
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
+            raise ExternalServiceError("supabase", "O Supabase nao retornou o lugar apos a insercao.")
+        return response[0]
+
+    async def update_place(
+        self,
+        *,
+        access_token: str,
+        place_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._request(
+            "PATCH",
+            self._build_url("rest", "places"),
+            headers=self._headers(access_token=access_token),
+            params=[("id", f"eq.{place_id}")],
+            json=payload,
+            context="places_update",
+        )
+
+    async def delete_place(
+        self,
+        *,
+        access_token: str,
+        place_id: str,
+    ) -> None:
+        await self._request(
+            "DELETE",
+            self._build_url("rest", "places"),
+            headers=self._headers(access_token=access_token),
+            params=[("id", f"eq.{place_id}")],
+            context="places_delete",
+        )
+
+    # --------------------------------------------------------------- place_photos
+
+    @property
+    def max_place_photo_bytes(self) -> int:
+        return self._settings.supabase_place_photo_max_bytes
+
+    @property
+    def place_photos_max_per_place(self) -> int:
+        return self._settings.supabase_place_photos_max_per_place
+
+    async def list_place_photos(
+        self,
+        *,
+        access_token: str,
+        place_id: str,
+    ) -> list[Any]:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "place_photos"),
+            headers=self._headers(access_token=access_token),
+            params=[
+                ("place_id", f"eq.{place_id}"),
+                ("select", "*"),
+                ("order", "sort_order.asc,created_at.asc"),
+            ],
+            context="place_photos_list",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao listar fotos do lugar.")
+        return payload
+
+    async def insert_place_photo(
+        self,
+        *,
+        access_token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self._request_json(
+            "POST",
+            self._build_url("rest", "place_photos"),
+            headers={
+                **self._headers(access_token=access_token),
+                "Prefer": "return=representation",
+            },
+            json=payload,
+            context="place_photos_insert",
+        )
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
+            raise ExternalServiceError("supabase", "O Supabase nao retornou a foto apos a insercao.")
+        return response[0]
+
+    async def update_place_photo(
+        self,
+        *,
+        access_token: str,
+        photo_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._request(
+            "PATCH",
+            self._build_url("rest", "place_photos"),
+            headers=self._headers(access_token=access_token),
+            params=[("id", f"eq.{photo_id}")],
+            json=payload,
+            context="place_photos_update",
+        )
+
+    async def clear_place_cover_photos(
+        self,
+        *,
+        access_token: str,
+        place_id: str,
+    ) -> None:
+        await self._request(
+            "PATCH",
+            self._build_url("rest", "place_photos"),
+            headers=self._headers(access_token=access_token),
+            params=[("place_id", f"eq.{place_id}"), ("is_cover", "eq.true")],
+            json={"is_cover": False},
+            context="place_photos_clear_cover",
+        )
+
+    async def delete_place_photo_record(
+        self,
+        *,
+        access_token: str,
+        photo_id: str,
+    ) -> dict[str, Any] | None:
+        payload = await self._request_json(
+            "DELETE",
+            self._build_url("rest", "place_photos"),
+            headers={
+                **self._headers(access_token=access_token),
+                "Prefer": "return=representation",
+            },
+            params=[("id", f"eq.{photo_id}")],
+            context="place_photos_delete",
+        )
+        if not isinstance(payload, list):
+            return None
+        first = payload[0] if payload else None
+        return first if isinstance(first, dict) else None
+
+    async def upload_place_photo(
+        self,
+        *,
+        access_token: str,
+        object_path: str,
+        content: bytes,
+        filename: str,
+        content_type: str,
+    ) -> dict[str, str]:
+        encoded_path = "/".join(quote(part, safe="") for part in object_path.split("/"))
+        await self._request(
+            "POST",
+            self._build_url(
+                "storage",
+                "object",
+                self._settings.supabase_place_photos_bucket,
+                encoded_path,
+            ),
+            headers=self._headers(access_token=access_token, include_content_type=False),
+            files={"file": (filename, content, content_type)},
+            data={"cacheControl": "3600"},
+            context="storage_upload_place_photo",
+        )
+        return {
+            "path": object_path,
+            "public_url": self.get_public_place_photo_url(object_path),
+        }
+
+    async def remove_place_photo_from_storage(
+        self,
+        *,
+        access_token: str,
+        object_path: str,
+    ) -> None:
+        try:
+            await self._request(
+                "DELETE",
+                self._build_url("storage", "object", self._settings.supabase_place_photos_bucket),
+                headers=self._headers(access_token=access_token),
+                json={"prefixes": [object_path]},
+                context="storage_remove_place_photo",
+            )
+        except ExternalServiceError:
+            pass
+
+    async def count_place_photos(
+        self,
+        *,
+        access_token: str,
+        place_id: str,
+    ) -> int:
+        response = await self._request(
+            "GET",
+            self._build_url("rest", "place_photos"),
+            headers={
+                **self._headers(access_token=access_token),
+                "Prefer": "count=exact",
+            },
+            params=[
+                ("place_id", f"eq.{place_id}"),
+                ("select", "id"),
+            ],
+            context="place_photos_count",
+        )
+        return self._parse_content_range_total(response.headers.get("content-range", ""))
+
+    def get_public_place_photo_url(self, object_path: str) -> str:
+        return self._build_url(
+            "storage",
+            "object",
+            "public",
+            self._settings.supabase_place_photos_bucket,
+            object_path,
+        )
+
+    # -------------------------------------------------------------------- rpc
+
+    async def call_rpc(
+        self,
+        *,
+        access_token: str,
+        function_name: str,
+        payload: dict[str, Any],
+    ) -> Any:
+        response = await self._request(
+            "POST",
+            self._build_url("rest", "rpc", function_name),
+            headers=self._headers(access_token=access_token),
+            json=payload,
+            context=f"rpc_{function_name}",
+        )
+        if not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ExternalServiceError(
+                "supabase",
+                f"A funcao RPC {function_name} retornou uma resposta invalida.",
+            ) from exc
+
+    # ----------------------------------------------------------------- static helpers
+
     def get_public_profile_photo_url(self, object_path: str) -> str:
         return self._build_url(
             "storage",
@@ -346,7 +847,7 @@ class SupabaseClient:
         *,
         headers: dict[str, str],
         context: str,
-        params: dict[str, str] | None = None,
+        params: Sequence[tuple[str, str]] | Mapping[str, str] | None = None,
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any] | list[Any]:
         response = await self._request(
@@ -384,7 +885,7 @@ class SupabaseClient:
         *,
         headers: dict[str, str],
         context: str,
-        params: dict[str, str] | None = None,
+        params: Sequence[tuple[str, str]] | Mapping[str, str] | None = None,
         json: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
@@ -445,6 +946,17 @@ class SupabaseClient:
             "supabase",
             f"Falha ao chamar o Supabase: {message}",
         )
+
+    @staticmethod
+    def _parse_content_range_total(header: str) -> int:
+        try:
+            if "/" in header:
+                total_part = header.split("/")[-1].strip()
+                if total_part != "*":
+                    return int(total_part)
+        except (ValueError, IndexError):
+            pass
+        return 0
 
     @staticmethod
     def _extract_error_message(response: httpx.Response) -> str:

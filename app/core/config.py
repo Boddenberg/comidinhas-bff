@@ -42,6 +42,13 @@ class Settings(BaseSettings):
         ge=1,
         le=10_485_760,
     )
+    supabase_place_photos_bucket: str = "place-photos"
+    supabase_place_photo_max_bytes: int = Field(
+        default=5_242_880,
+        ge=1,
+        le=20_971_520,
+    )
+    supabase_place_photos_max_per_place: int = Field(default=10, ge=1, le=30)
 
     @field_validator(
         "openai_api_key",
