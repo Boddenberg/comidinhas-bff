@@ -114,7 +114,7 @@ class SupabaseClient:
     async def update_user(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         attributes: dict[str, Any],
         email_redirect_to: str | None = None,
     ) -> dict[str, Any]:
@@ -136,7 +136,7 @@ class SupabaseClient:
     async def get_profile(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         user_id: str,
     ) -> dict[str, Any] | None:
         payload = await self._request_json(
@@ -160,7 +160,7 @@ class SupabaseClient:
     async def upsert_profile(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         profile_data: dict[str, Any],
     ) -> dict[str, Any]:
         payload = await self._request_json(
@@ -184,7 +184,7 @@ class SupabaseClient:
     async def delete_profile(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         user_id: str,
     ) -> dict[str, Any] | None:
         payload = await self._request_json(
@@ -208,7 +208,7 @@ class SupabaseClient:
     async def upload_profile_photo(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         object_path: str,
         content: bytes,
         filename: str,
@@ -236,7 +236,7 @@ class SupabaseClient:
     async def remove_profile_photo(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         object_path: str,
     ) -> None:
         await self._request(
@@ -273,7 +273,7 @@ class SupabaseClient:
     async def list_user_memberships(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         user_id: str,
     ) -> list[Any]:
         payload = await self._request_json(
@@ -293,7 +293,7 @@ class SupabaseClient:
     async def get_group_with_members(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         group_id: str,
     ) -> dict[str, Any] | None:
         payload = await self._request_json(
@@ -320,7 +320,7 @@ class SupabaseClient:
     async def insert_group(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         response = await self._request_json(
@@ -340,7 +340,7 @@ class SupabaseClient:
     async def update_group(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         group_id: str,
         payload: dict[str, Any],
     ) -> None:
@@ -356,7 +356,7 @@ class SupabaseClient:
     async def delete_group(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         group_id: str,
     ) -> None:
         await self._request(
@@ -372,7 +372,7 @@ class SupabaseClient:
     async def insert_group_member(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         response = await self._request_json(
@@ -392,7 +392,7 @@ class SupabaseClient:
     async def delete_group_member(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         group_id: str,
         profile_id: str,
     ) -> None:
@@ -412,7 +412,7 @@ class SupabaseClient:
     async def find_profile_by_email(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         email: str,
     ) -> dict[str, Any] | None:
         payload = await self._request_json(
@@ -435,7 +435,7 @@ class SupabaseClient:
     async def list_places(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         group_id: str,
         select: str,
         filters: list[tuple[str, str]],
@@ -482,7 +482,7 @@ class SupabaseClient:
     async def get_place(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         place_id: str,
         select: str,
     ) -> dict[str, Any] | None:
@@ -504,7 +504,7 @@ class SupabaseClient:
     async def insert_place(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         response = await self._request_json(
@@ -524,7 +524,7 @@ class SupabaseClient:
     async def update_place(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         place_id: str,
         payload: dict[str, Any],
     ) -> None:
@@ -540,7 +540,7 @@ class SupabaseClient:
     async def delete_place(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         place_id: str,
     ) -> None:
         await self._request(
@@ -564,7 +564,7 @@ class SupabaseClient:
     async def list_place_photos(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         place_id: str,
     ) -> list[Any]:
         payload = await self._request_json(
@@ -585,7 +585,7 @@ class SupabaseClient:
     async def insert_place_photo(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         response = await self._request_json(
@@ -605,7 +605,7 @@ class SupabaseClient:
     async def update_place_photo(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         photo_id: str,
         payload: dict[str, Any],
     ) -> None:
@@ -621,7 +621,7 @@ class SupabaseClient:
     async def clear_place_cover_photos(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         place_id: str,
     ) -> None:
         await self._request(
@@ -636,7 +636,7 @@ class SupabaseClient:
     async def delete_place_photo_record(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         photo_id: str,
     ) -> dict[str, Any] | None:
         payload = await self._request_json(
@@ -657,7 +657,7 @@ class SupabaseClient:
     async def upload_place_photo(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         object_path: str,
         content: bytes,
         filename: str,
@@ -685,7 +685,7 @@ class SupabaseClient:
     async def remove_place_photo_from_storage(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         object_path: str,
     ) -> None:
         try:
@@ -702,7 +702,7 @@ class SupabaseClient:
     async def count_place_photos(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         place_id: str,
     ) -> int:
         response = await self._request(
@@ -734,7 +734,7 @@ class SupabaseClient:
     async def call_rpc(
         self,
         *,
-        access_token: str,
+        access_token: str | None = None,
         function_name: str,
         payload: dict[str, Any],
     ) -> Any:
@@ -787,6 +787,7 @@ class SupabaseClient:
     ) -> dict[str, str]:
         self._ensure_configured()
         key = self._settings.supabase_key
+        service_key = self._settings.supabase_service_role_key or key
         if not key:
             raise ConfigurationError(
                 "As credenciais do Supabase nao estao configuradas corretamente.",
@@ -794,7 +795,7 @@ class SupabaseClient:
 
         headers = {
             "apikey": key,
-            "Authorization": f"Bearer {access_token or key}",
+            "Authorization": f"Bearer {access_token or service_key}",
             "Accept": "application/json",
             "X-Supabase-Api-Version": self.API_VERSION,
         }

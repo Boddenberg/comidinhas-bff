@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     supabase_url: str | None = None
     supabase_key: str | None = None
+    supabase_service_role_key: str | None = None
     supabase_timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
     supabase_profile_bucket: str = "profile-photos"
     supabase_profile_photo_max_bytes: int = Field(
@@ -55,6 +56,7 @@ class Settings(BaseSettings):
         "google_maps_api_key",
         "supabase_url",
         "supabase_key",
+        "supabase_service_role_key",
         mode="before",
     )
     @classmethod

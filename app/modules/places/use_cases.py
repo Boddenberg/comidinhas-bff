@@ -34,19 +34,10 @@ class ManagePlacesUseCase:
     def __init__(self, client: SupabaseClient) -> None:
         self._client = client
 
-    async def list_places(
-        self,
-        *,
-        access_token: str,
-        params: PlaceListParams,
-    ) -> PlaceListResponse:
-        group_id = await self._resolve_group_id(
-            access_token=access_token,
-            group_id=params.group_id,
-        )
+    async def list_places(self, *, params: PlaceListParams) -> PlaceListResponse:
+        group_id = self._require_group_id(params.group_id)
 
         rows, total = await self._client.list_places(
-            access_token=access_token,
             group_id=group_id,
             select=self.PLACE_LIST_SELECT,
             filters=params.to_supabase_filters(),
@@ -66,14 +57,8 @@ class ManagePlacesUseCase:
             has_more=has_more,
         )
 
-    async def get_place(
-        self,
-        *,
-        access_token: str,
-        place_id: str,
-    ) -> PlaceResponse:
+    async def get_place(self, *, place_id: str) -> PlaceResponse:
         raw = await self._client.get_place(
-            access_token=access_token,
             place_id=place_id,
             select=self.PLACE_DETAIL_SELECT,
         )
@@ -81,19 +66,8 @@ class ManagePlacesUseCase:
             raise NotFoundError("Lugar nao encontrado.")
         return self._map_place(raw)
 
-    async def create_place(
-        self,
-        *,
-        access_token: str,
-        request: PlaceCreateRequest,
-    ) -> PlaceResponse:
-        user_payload = await self._client.get_user(access_token=access_token)
-        creator_id = str(user_payload["id"])
-
-        group_id = await self._resolve_group_id(
-            access_token=access_token,
-            group_id=request.group_id,
-        )
+    async def create_place(self, *, request: PlaceCreateRequest) -> PlaceResponse:
+        group_id = self._require_group_id(request.group_id)
 
         payload: dict[str, Any] = request.model_dump(
             exclude={"group_id"},
@@ -102,21 +76,13 @@ class ManagePlacesUseCase:
         if isinstance(payload.get("status"), PlaceStatus):
             payload["status"] = payload["status"].value
         payload["group_id"] = group_id
-        payload["created_by"] = creator_id
 
-        created = await self._client.insert_place(
-            access_token=access_token,
-            payload=payload,
-        )
-        return await self.get_place(
-            access_token=access_token,
-            place_id=str(created["id"]),
-        )
+        created = await self._client.insert_place(payload=payload)
+        return await self.get_place(place_id=str(created["id"]))
 
     async def update_place(
         self,
         *,
-        access_token: str,
         place_id: str,
         request: PlaceUpdateRequest,
     ) -> PlaceResponse:
@@ -126,50 +92,18 @@ class ManagePlacesUseCase:
         if isinstance(payload.get("status"), PlaceStatus):
             payload["status"] = payload["status"].value
 
-        await self._client.update_place(
-            access_token=access_token,
-            place_id=place_id,
-            payload=payload,
-        )
-        return await self.get_place(
-            access_token=access_token,
-            place_id=place_id,
-        )
+        await self._client.update_place(place_id=place_id, payload=payload)
+        return await self.get_place(place_id=place_id)
 
-    async def delete_place(
-        self,
-        *,
-        access_token: str,
-        place_id: str,
-    ) -> dict[str, Any]:
-        await self._client.delete_place(
-            access_token=access_token,
-            place_id=place_id,
-        )
+    async def delete_place(self, *, place_id: str) -> dict[str, Any]:
+        await self._client.delete_place(place_id=place_id)
         return {"success": True, "message": "Lugar removido com sucesso."}
 
-    async def _resolve_group_id(
-        self,
-        *,
-        access_token: str,
-        group_id: str | None,
-    ) -> str:
+    @staticmethod
+    def _require_group_id(group_id: str | None) -> str:
         if group_id:
             return group_id
-
-        user_payload = await self._client.get_user(access_token=access_token)
-        profile = await self._client.get_profile(
-            access_token=access_token,
-            user_id=str(user_payload["id"]),
-        )
-        if isinstance(profile, dict):
-            active_group_id = profile.get("active_group_id")
-            if isinstance(active_group_id, str) and active_group_id:
-                return active_group_id
-
-        raise BadRequestError(
-            "Voce ainda nao tem um grupo ativo. Crie um grupo ou informe group_id.",
-        )
+        raise BadRequestError("Informe o group_id.")
 
     @classmethod
     def _map_place(cls, raw: dict[str, Any]) -> PlaceResponse:
@@ -192,7 +126,7 @@ class ManagePlacesUseCase:
             notes=raw.get("notes"),
             status=PlaceStatus(raw.get("status") or PlaceStatus.QUERO_IR.value),
             is_favorite=bool(raw.get("is_favorite") or False),
-            created_by=str(raw.get("created_by", "")),
+            created_by=raw.get("created_by"),
             updated_by=raw.get("updated_by"),
             created_at=raw.get("created_at"),
             updated_at=raw.get("updated_at"),
@@ -211,7 +145,7 @@ class ManagePlacesUseCase:
             storage_path=str(raw.get("storage_path", "")),
             is_cover=bool(raw.get("is_cover") or False),
             sort_order=int(raw.get("sort_order") or 0),
-            created_by=str(raw.get("created_by", "")),
+            created_by=raw.get("created_by"),
             created_at=raw.get("created_at"),
         )
 

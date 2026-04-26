@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from app.core.errors import BadRequestError, ConflictError, NotFoundError
@@ -15,10 +14,8 @@ from app.modules.groups.schemas import (
     GroupSummaryResponse,
     GroupType,
     GroupUpdateRequest,
-    ProfileContextResponse,
     SeedFilipeVictorRequest,
     SeedFilipeVictorResponse,
-    SetActiveGroupRequest,
 )
 
 
@@ -26,61 +23,25 @@ class ManageGroupsUseCase:
     def __init__(self, client: SupabaseClient) -> None:
         self._client = client
 
-    async def list_my_groups(self, *, access_token: str) -> GroupListResponse:
-        user_payload = await self._client.get_user(access_token=access_token)
-        user_id = str(user_payload["id"])
-
-        memberships_task = self._client.list_user_memberships(
-            access_token=access_token,
-            user_id=user_id,
-        )
-        groups_task = self._client.list_groups(access_token=access_token)
-        memberships, groups = await asyncio.gather(memberships_task, groups_task)
-
-        roles_by_group: dict[str, str] = {
-            str(item.get("group_id")): str(item.get("role"))
-            for item in memberships
-            if isinstance(item, dict) and item.get("group_id")
-        }
-
-        items: list[GroupSummaryResponse] = []
-        for raw in groups:
-            if not isinstance(raw, dict):
-                continue
-            group_id = str(raw.get("id", ""))
-            role_value = roles_by_group.get(group_id, GroupMemberRole.MEMBER.value)
-            items.append(self._map_summary(raw, role_value))
+    async def list_groups(self) -> GroupListResponse:
+        groups = await self._client.list_groups()
+        items = [self._map_summary(raw, GroupMemberRole.MEMBER.value) for raw in groups if isinstance(raw, dict)]
         return GroupListResponse(items=items)
 
-    async def get_group(
-        self,
-        *,
-        access_token: str,
-        group_id: str,
-    ) -> GroupResponse:
-        raw = await self._client.get_group_with_members(
-            access_token=access_token,
-            group_id=group_id,
-        )
+    async def get_group(self, *, group_id: str) -> GroupResponse:
+        raw = await self._client.get_group_with_members(group_id=group_id)
         if raw is None:
-            raise NotFoundError("Grupo nao encontrado ou voce nao faz parte dele.")
+            raise NotFoundError("Grupo nao encontrado.")
         return self._map_group(raw)
 
-    async def create_group(
-        self,
-        *,
-        access_token: str,
-        request: GroupCreateRequest,
-    ) -> GroupResponse:
-        user_payload = await self._client.get_user(access_token=access_token)
-        owner_id = str(user_payload["id"])
+    async def create_group(self, *, request: GroupCreateRequest) -> GroupResponse:
+        owner_id = request.owner_id
+        if not owner_id:
+            raise BadRequestError("Informe owner_id para criar um grupo.")
 
         partner_id: str | None = request.partner_profile_id
         if partner_id is None and request.partner_email:
-            partner_id = await self._resolve_profile_id_by_email(
-                access_token=access_token,
-                email=request.partner_email,
-            )
+            partner_id = await self._resolve_profile_id_by_email(email=request.partner_email)
             if partner_id is None:
                 raise NotFoundError(
                     f"Nao encontrei um perfil com o email {request.partner_email}.",
@@ -96,78 +57,40 @@ class ManageGroupsUseCase:
             "owner_id": owner_id,
             "created_by": owner_id,
         }
-        created = await self._client.insert_group(
-            access_token=access_token,
-            payload=payload,
-        )
+        created = await self._client.insert_group(payload=payload)
 
         if partner_id is not None:
             try:
                 await self._client.insert_group_member(
-                    access_token=access_token,
                     payload={
                         "group_id": created["id"],
                         "profile_id": partner_id,
                         "role": GroupMemberRole.MEMBER.value,
-                        "invited_by": owner_id,
                     },
                 )
             except ConflictError:
                 pass
 
-        return await self.get_group(
-            access_token=access_token,
-            group_id=str(created["id"]),
-        )
+        return await self.get_group(group_id=str(created["id"]))
 
-    async def update_group(
-        self,
-        *,
-        access_token: str,
-        group_id: str,
-        request: GroupUpdateRequest,
-    ) -> GroupResponse:
+    async def update_group(self, *, group_id: str, request: GroupUpdateRequest) -> GroupResponse:
         payload = request.model_dump(exclude_unset=True)
         if "type" in payload and isinstance(payload["type"], GroupType):
             payload["type"] = payload["type"].value
         if not payload:
             raise BadRequestError("Informe ao menos um campo para atualizar o grupo.")
 
-        await self._client.update_group(
-            access_token=access_token,
-            group_id=group_id,
-            payload=payload,
-        )
-        return await self.get_group(access_token=access_token, group_id=group_id)
+        await self._client.update_group(group_id=group_id, payload=payload)
+        return await self.get_group(group_id=group_id)
 
-    async def delete_group(
-        self,
-        *,
-        access_token: str,
-        group_id: str,
-    ) -> dict[str, Any]:
-        await self._client.delete_group(
-            access_token=access_token,
-            group_id=group_id,
-        )
+    async def delete_group(self, *, group_id: str) -> dict[str, Any]:
+        await self._client.delete_group(group_id=group_id)
         return {"success": True, "message": "Grupo removido com sucesso."}
 
-    async def add_member(
-        self,
-        *,
-        access_token: str,
-        group_id: str,
-        request: GroupMemberAddRequest,
-    ) -> GroupResponse:
-        user_payload = await self._client.get_user(access_token=access_token)
-        invited_by = str(user_payload["id"])
-
+    async def add_member(self, *, group_id: str, request: GroupMemberAddRequest) -> GroupResponse:
         profile_id = request.profile_id
         if profile_id is None and request.email:
-            profile_id = await self._resolve_profile_id_by_email(
-                access_token=access_token,
-                email=request.email,
-            )
+            profile_id = await self._resolve_profile_id_by_email(email=request.email)
             if profile_id is None:
                 raise NotFoundError(
                     f"Nao encontrei um perfil com o email {request.email}.",
@@ -177,101 +100,20 @@ class ManageGroupsUseCase:
             raise BadRequestError("Informe profile_id ou email do membro a adicionar.")
 
         await self._client.insert_group_member(
-            access_token=access_token,
             payload={
                 "group_id": group_id,
                 "profile_id": profile_id,
                 "role": request.role.value,
-                "invited_by": invited_by,
             },
         )
-        return await self.get_group(
-            access_token=access_token,
-            group_id=group_id,
-        )
+        return await self.get_group(group_id=group_id)
 
-    async def remove_member(
-        self,
-        *,
-        access_token: str,
-        group_id: str,
-        profile_id: str,
-    ) -> GroupResponse:
-        await self._client.delete_group_member(
-            access_token=access_token,
-            group_id=group_id,
-            profile_id=profile_id,
-        )
-        return await self.get_group(
-            access_token=access_token,
-            group_id=group_id,
-        )
+    async def remove_member(self, *, group_id: str, profile_id: str) -> GroupResponse:
+        await self._client.delete_group_member(group_id=group_id, profile_id=profile_id)
+        return await self.get_group(group_id=group_id)
 
-    async def set_active_group(
-        self,
-        *,
-        access_token: str,
-        request: SetActiveGroupRequest,
-    ) -> ProfileContextResponse:
-        await self._client.call_rpc(
-            access_token=access_token,
-            function_name="set_active_group",
-            payload={"target_group_id": request.group_id},
-        )
-        return await self.get_my_context(access_token=access_token)
-
-    async def get_my_context(
-        self,
-        *,
-        access_token: str,
-    ) -> ProfileContextResponse:
-        user_payload = await self._client.get_user(access_token=access_token)
-        user_id = str(user_payload["id"])
-        profile_payload = await self._client.get_profile(
-            access_token=access_token,
-            user_id=user_id,
-        )
-        if not isinstance(profile_payload, dict):
-            raise NotFoundError(
-                "Perfil ainda nao foi criado. Faca login novamente para inicializa-lo.",
-            )
-
-        active_group_id = profile_payload.get("active_group_id")
-        groups_response, active_group = await asyncio.gather(
-            self.list_my_groups(access_token=access_token),
-            self._safe_get_group(
-                access_token=access_token,
-                group_id=str(active_group_id) if active_group_id else None,
-            ),
-        )
-
-        active_role: GroupMemberRole | None = None
-        if active_group is not None:
-            for member in active_group.members:
-                if member.profile_id == user_id:
-                    active_role = member.role
-                    break
-
-        return ProfileContextResponse(
-            user_id=user_id,
-            profile_id=str(profile_payload.get("id", user_id)),
-            email=profile_payload.get("email") or user_payload.get("email"),
-            username=profile_payload.get("username"),
-            full_name=profile_payload.get("full_name"),
-            avatar_url=profile_payload.get("avatar_url"),
-            active_group=active_group,
-            active_role=active_role,
-            groups=groups_response.items,
-        )
-
-    async def seed_filipe_victor(
-        self,
-        *,
-        access_token: str,
-        request: SeedFilipeVictorRequest,
-    ) -> SeedFilipeVictorResponse:
+    async def seed_filipe_victor(self, *, request: SeedFilipeVictorRequest) -> SeedFilipeVictorResponse:
         result = await self._client.call_rpc(
-            access_token=access_token,
             function_name="seed_filipe_victor",
             payload={
                 "filipe_email": request.filipe_email,
@@ -285,32 +127,8 @@ class ManageGroupsUseCase:
             )
         return SeedFilipeVictorResponse(group_id=group_id)
 
-    async def _safe_get_group(
-        self,
-        *,
-        access_token: str,
-        group_id: str | None,
-    ) -> GroupResponse | None:
-        if not group_id:
-            return None
-        try:
-            return await self.get_group(
-                access_token=access_token,
-                group_id=group_id,
-            )
-        except NotFoundError:
-            return None
-
-    async def _resolve_profile_id_by_email(
-        self,
-        *,
-        access_token: str,
-        email: str,
-    ) -> str | None:
-        profile = await self._client.find_profile_by_email(
-            access_token=access_token,
-            email=email,
-        )
+    async def _resolve_profile_id_by_email(self, *, email: str) -> str | None:
+        profile = await self._client.find_profile_by_email(email=email)
         if isinstance(profile, dict):
             value = profile.get("id")
             if isinstance(value, str) and value:
@@ -355,7 +173,7 @@ class ManageGroupsUseCase:
             type=GroupType(raw.get("type") or GroupType.GROUP.value),
             description=raw.get("description"),
             owner_id=str(raw.get("owner_id", "")),
-            created_by=str(raw.get("created_by", "")),
+            created_by=raw.get("created_by"),
             updated_by=raw.get("updated_by"),
             created_at=raw.get("created_at"),
             updated_at=raw.get("updated_at"),
