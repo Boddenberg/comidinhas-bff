@@ -12,8 +12,10 @@ from app.modules.google_places.use_cases import (
     SavePlaceFromGoogleUseCase,
     SearchNearbyRestaurantsUseCase,
 )
+from app.modules.grupos.use_cases import ManageGruposUseCase
 from app.modules.groups.use_cases import ManageGroupsUseCase
 from app.modules.home.use_cases import GetHomeSummaryUseCase
+from app.modules.lugares.use_cases import ManageLugaresUseCase
 from app.modules.places.photo_use_cases import ManagePlacePhotosUseCase
 from app.modules.places.use_cases import ManagePlacesUseCase
 from app.modules.profiles.use_cases import ManageProfilesUseCase
@@ -105,6 +107,18 @@ def get_home_use_case(
     client: SupabaseClient = Depends(get_supabase_client),
 ) -> GetHomeSummaryUseCase:
     return GetHomeSummaryUseCase(client=client)
+
+
+def get_manage_grupos_use_case(
+    client: SupabaseClient = Depends(get_supabase_client),
+) -> ManageGruposUseCase:
+    return ManageGruposUseCase(client=client)
+
+
+def get_manage_lugares_use_case(
+    client: SupabaseClient = Depends(get_supabase_client),
+) -> ManageLugaresUseCase:
+    return ManageLugaresUseCase(client=client)
 
 
 def get_save_from_google_use_case(
