@@ -1,0 +1,713 @@
+{
+  "_type": "export",
+  "exportFormat": 4,
+  "exportDate": "2026-04-26T00:00:00.000Z",
+  "exportSource": "claude-code",
+  "__export_format": 4,
+  "__export_date": "2026-04-26T00:00:00.000Z",
+  "__export_source": "claude-code",
+  "resources": [
+    {
+      "_id": "wrk_comidinhas",
+      "parentId": null,
+      "name": "Comidinhas BFF",
+      "description": "API do app Comidinhas — sem autenticação",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+
+    {
+      "_id": "env_base",
+      "parentId": "wrk_comidinhas",
+      "name": "Base Environment",
+      "data": {
+        "perfil_id": "cole-o-uuid-aqui",
+        "grupo_id": "cole-o-uuid-aqui",
+        "lugar_id": "cole-o-uuid-aqui",
+        "foto_id": "cole-o-uuid-aqui"
+      },
+      "color": null,
+      "isPrivate": false,
+      "_type": "environment"
+    },
+    {
+      "_id": "env_local",
+      "parentId": "env_base",
+      "name": "Local",
+      "data": { "base_url": "http://localhost:8000" },
+      "color": "#00AA66",
+      "isPrivate": false,
+      "_type": "environment"
+    },
+    {
+      "_id": "env_prod",
+      "parentId": "env_base",
+      "name": "Produção (Railway)",
+      "data": { "base_url": "https://comidinhas-bff-production.up.railway.app" },
+      "color": "#E04646",
+      "isPrivate": false,
+      "_type": "environment"
+    },
+
+    {
+      "_id": "fld_local",
+      "parentId": "wrk_comidinhas",
+      "name": "⬡ LOCAL  —  localhost:8000",
+      "_type": "request_group"
+    },
+    {
+      "_id": "fld_prod",
+      "parentId": "wrk_comidinhas",
+      "name": "⬡ PRODUÇÃO  —  Railway",
+      "_type": "request_group"
+    },
+
+    {
+      "_id": "fld_l_health", "parentId": "fld_local", "name": "Health", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_health",
+      "parentId": "fld_l_health",
+      "name": "Health Check",
+      "url": "http://localhost:8000/health",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_hello",
+      "parentId": "fld_l_health",
+      "name": "Hello World",
+      "url": "http://localhost:8000/api/v1/hello-world",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_l_perfis", "parentId": "fld_local", "name": "Perfis", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_perfis_list",
+      "parentId": "fld_l_perfis",
+      "name": "Listar perfis",
+      "url": "http://localhost:8000/api/v1/perfis/",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_perfis_create",
+      "parentId": "fld_l_perfis",
+      "name": "Criar perfil",
+      "url": "http://localhost:8000/api/v1/perfis/",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"nome\": \"Filipe\",\n  \"email\": \"filipe@exemplo.com\",\n  \"bio\": \"Amante de comida boa\",\n  \"cidade\": \"São Paulo\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_perfis_email",
+      "parentId": "fld_l_perfis",
+      "name": "Buscar por email (\"login\")",
+      "url": "http://localhost:8000/api/v1/perfis/por-email",
+      "method": "GET",
+      "body": {},
+      "parameters": [{"name": "email", "value": "filipe@exemplo.com", "enabled": true}],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_perfis_get",
+      "parentId": "fld_l_perfis",
+      "name": "Buscar perfil por ID",
+      "url": "http://localhost:8000/api/v1/perfis/{{ perfil_id }}",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_perfis_patch",
+      "parentId": "fld_l_perfis",
+      "name": "Atualizar perfil",
+      "url": "http://localhost:8000/api/v1/perfis/{{ perfil_id }}",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"bio\": \"Nova bio aqui\",\n  \"cidade\": \"Rio de Janeiro\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_perfis_delete",
+      "parentId": "fld_l_perfis",
+      "name": "Remover perfil",
+      "url": "http://localhost:8000/api/v1/perfis/{{ perfil_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_perfis_foto_post",
+      "parentId": "fld_l_perfis",
+      "name": "Upload foto do perfil",
+      "url": "http://localhost:8000/api/v1/perfis/{{ perfil_id }}/foto",
+      "method": "POST",
+      "body": { "mimeType": "multipart/form-data", "params": [{"name": "file", "value": "", "fileName": "", "type": "file"}] },
+      "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_perfis_foto_delete",
+      "parentId": "fld_l_perfis",
+      "name": "Remover foto do perfil",
+      "url": "http://localhost:8000/api/v1/perfis/{{ perfil_id }}/foto",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_l_grupos", "parentId": "fld_local", "name": "Grupos", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_grupos_list",
+      "parentId": "fld_l_grupos",
+      "name": "Listar grupos",
+      "url": "http://localhost:8000/api/v1/grupos/",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_grupos_create",
+      "parentId": "fld_l_grupos",
+      "name": "Criar grupo",
+      "url": "http://localhost:8000/api/v1/grupos/",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"nome\": \"Filipe e Victor\",\n  \"tipo\": \"casal\",\n  \"descricao\": \"Nossos lugares favoritos\",\n  \"membros\": [\n    { \"nome\": \"Filipe\", \"email\": \"filipe@exemplo.com\" },\n    { \"nome\": \"Victor\", \"email\": \"victor@exemplo.com\" }\n  ]\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_grupos_get",
+      "parentId": "fld_l_grupos",
+      "name": "Buscar grupo",
+      "url": "http://localhost:8000/api/v1/grupos/{{ grupo_id }}",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_grupos_patch",
+      "parentId": "fld_l_grupos",
+      "name": "Atualizar grupo",
+      "url": "http://localhost:8000/api/v1/grupos/{{ grupo_id }}",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"nome\": \"Novo Nome\",\n  \"descricao\": \"Descrição atualizada\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_grupos_delete",
+      "parentId": "fld_l_grupos",
+      "name": "Remover grupo",
+      "url": "http://localhost:8000/api/v1/grupos/{{ grupo_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_l_lugares", "parentId": "fld_local", "name": "Lugares", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_lugares_list",
+      "parentId": "fld_l_lugares",
+      "name": "Listar lugares",
+      "url": "http://localhost:8000/api/v1/lugares/",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {"name": "grupo_id", "value": "{{ grupo_id }}", "enabled": true},
+        {"name": "pagina", "value": "1", "enabled": true},
+        {"name": "tamanho_pagina", "value": "20", "enabled": true},
+        {"name": "busca", "value": "", "enabled": false},
+        {"name": "categoria", "value": "", "enabled": false},
+        {"name": "bairro", "value": "", "enabled": false},
+        {"name": "status", "value": "quero_ir", "enabled": false},
+        {"name": "favorito", "value": "true", "enabled": false},
+        {"name": "faixa_preco", "value": "2", "enabled": false},
+        {"name": "faixa_preco_min", "value": "1", "enabled": false},
+        {"name": "faixa_preco_max", "value": "3", "enabled": false},
+        {"name": "ordenar_por", "value": "criado_em", "enabled": false},
+        {"name": "direcao", "value": "desc", "enabled": false}
+      ],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_lugares_create",
+      "parentId": "fld_l_lugares",
+      "name": "Criar lugar",
+      "url": "http://localhost:8000/api/v1/lugares/",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"grupo_id\": \"{{ grupo_id }}\",\n  \"nome\": \"Cantina do Saber\",\n  \"categoria\": \"Italiana\",\n  \"bairro\": \"Pinheiros\",\n  \"cidade\": \"São Paulo\",\n  \"faixa_preco\": 2,\n  \"link\": \"https://exemplo.com\",\n  \"notas\": \"Ótima massa!\",\n  \"status\": \"quero_ir\",\n  \"favorito\": false,\n  \"adicionado_por\": \"Filipe\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_lugares_get",
+      "parentId": "fld_l_lugares",
+      "name": "Buscar lugar",
+      "url": "http://localhost:8000/api/v1/lugares/{{ lugar_id }}",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_lugares_patch",
+      "parentId": "fld_l_lugares",
+      "name": "Atualizar lugar",
+      "url": "http://localhost:8000/api/v1/lugares/{{ lugar_id }}",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"status\": \"fomos\",\n  \"favorito\": true,\n  \"notas\": \"Fomos e amamos!\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_lugares_delete",
+      "parentId": "fld_l_lugares",
+      "name": "Remover lugar",
+      "url": "http://localhost:8000/api/v1/lugares/{{ lugar_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "fld_l_fotos", "parentId": "fld_l_lugares", "name": "Fotos", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_fotos_upload",
+      "parentId": "fld_l_fotos",
+      "name": "Upload de foto",
+      "url": "http://localhost:8000/api/v1/lugares/{{ lugar_id }}/fotos",
+      "method": "POST",
+      "body": { "mimeType": "multipart/form-data", "params": [{"name": "file", "value": "", "fileName": "", "type": "file"}] },
+      "parameters": [{"name": "definir_como_capa", "value": "false", "enabled": true}],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_fotos_capa",
+      "parentId": "fld_l_fotos",
+      "name": "Definir como capa",
+      "url": "http://localhost:8000/api/v1/lugares/{{ lugar_id }}/fotos/{{ foto_id }}/capa",
+      "method": "PATCH", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_fotos_reordenar",
+      "parentId": "fld_l_fotos",
+      "name": "Reordenar fotos",
+      "url": "http://localhost:8000/api/v1/lugares/{{ lugar_id }}/fotos/reordenar",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"ids_fotos\": [\"id_3\", \"id_1\", \"id_2\"]\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_fotos_delete",
+      "parentId": "fld_l_fotos",
+      "name": "Remover foto",
+      "url": "http://localhost:8000/api/v1/lugares/{{ lugar_id }}/fotos/{{ foto_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_l_home", "parentId": "fld_local", "name": "Home", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_home",
+      "parentId": "fld_l_home",
+      "name": "Resumo da Home",
+      "url": "http://localhost:8000/api/v1/home/",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {"name": "grupo_id", "value": "{{ grupo_id }}", "enabled": true},
+        {"name": "limite", "value": "5", "enabled": true}
+      ],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_l_chat", "parentId": "fld_local", "name": "Chat (OpenAI)", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_chat",
+      "parentId": "fld_l_chat",
+      "name": "Chat",
+      "url": "http://localhost:8000/api/v1/chat",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"message\": \"Sugira um restaurante italiano em SP\",\n  \"history\": []\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_l_google", "parentId": "fld_local", "name": "Google Maps", "_type": "request_group"
+    },
+    {
+      "_id": "req_l_google_nearby",
+      "parentId": "fld_l_google",
+      "name": "Restaurantes próximos",
+      "url": "http://localhost:8000/api/v1/google-maps/restaurants/nearby",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"latitude\": -23.5505,\n  \"longitude\": -46.6333,\n  \"radius_meters\": 1500,\n  \"max_results\": 10\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_google_autocomplete",
+      "parentId": "fld_l_google",
+      "name": "Autocomplete",
+      "url": "http://localhost:8000/api/v1/google-maps/places/autocomplete",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"input\": \"Cantina\",\n  \"location_bias\": {\n    \"latitude\": -23.5505,\n    \"longitude\": -46.6333,\n    \"radius_meters\": 5000\n  },\n  \"max_results\": 5\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_google_details",
+      "parentId": "fld_l_google",
+      "name": "Detalhes de um lugar",
+      "url": "http://localhost:8000/api/v1/google-maps/places/ChIJ0_mGbzpezpQRhEIbxiGYgSM",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_l_google_save",
+      "parentId": "fld_l_google",
+      "name": "Salvar lugar do Google",
+      "url": "http://localhost:8000/api/v1/google-maps/places/save",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"place_id\": \"ChIJ0_mGbzpezpQRhEIbxiGYgSM\",\n  \"grupo_id\": \"{{ grupo_id }}\",\n  \"status\": \"quero_ir\",\n  \"favorito\": false,\n  \"notas\": null,\n  \"adicionado_por\": \"Filipe\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_p_health", "parentId": "fld_prod", "name": "Health", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_health",
+      "parentId": "fld_p_health",
+      "name": "Health Check",
+      "url": "https://comidinhas-bff-production.up.railway.app/health",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_hello",
+      "parentId": "fld_p_health",
+      "name": "Hello World",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/hello-world",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_p_perfis", "parentId": "fld_prod", "name": "Perfis", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_perfis_list",
+      "parentId": "fld_p_perfis",
+      "name": "Listar perfis",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_perfis_create",
+      "parentId": "fld_p_perfis",
+      "name": "Criar perfil",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"nome\": \"Filipe\",\n  \"email\": \"filipe@exemplo.com\",\n  \"bio\": \"Amante de comida boa\",\n  \"cidade\": \"São Paulo\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_perfis_email",
+      "parentId": "fld_p_perfis",
+      "name": "Buscar por email (\"login\")",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/por-email",
+      "method": "GET",
+      "body": {},
+      "parameters": [{"name": "email", "value": "filipe@exemplo.com", "enabled": true}],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_perfis_get",
+      "parentId": "fld_p_perfis",
+      "name": "Buscar perfil por ID",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/{{ perfil_id }}",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_perfis_patch",
+      "parentId": "fld_p_perfis",
+      "name": "Atualizar perfil",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/{{ perfil_id }}",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"bio\": \"Nova bio aqui\",\n  \"cidade\": \"Rio de Janeiro\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_perfis_delete",
+      "parentId": "fld_p_perfis",
+      "name": "Remover perfil",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/{{ perfil_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_perfis_foto_post",
+      "parentId": "fld_p_perfis",
+      "name": "Upload foto do perfil",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/{{ perfil_id }}/foto",
+      "method": "POST",
+      "body": { "mimeType": "multipart/form-data", "params": [{"name": "file", "value": "", "fileName": "", "type": "file"}] },
+      "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_perfis_foto_delete",
+      "parentId": "fld_p_perfis",
+      "name": "Remover foto do perfil",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/perfis/{{ perfil_id }}/foto",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_p_grupos", "parentId": "fld_prod", "name": "Grupos", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_grupos_list",
+      "parentId": "fld_p_grupos",
+      "name": "Listar grupos",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/grupos/",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_grupos_create",
+      "parentId": "fld_p_grupos",
+      "name": "Criar grupo",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/grupos/",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"nome\": \"Filipe e Victor\",\n  \"tipo\": \"casal\",\n  \"descricao\": \"Nossos lugares favoritos\",\n  \"membros\": [\n    { \"nome\": \"Filipe\", \"email\": \"filipe@exemplo.com\" },\n    { \"nome\": \"Victor\", \"email\": \"victor@exemplo.com\" }\n  ]\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_grupos_get",
+      "parentId": "fld_p_grupos",
+      "name": "Buscar grupo",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/grupos/{{ grupo_id }}",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_grupos_patch",
+      "parentId": "fld_p_grupos",
+      "name": "Atualizar grupo",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/grupos/{{ grupo_id }}",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"nome\": \"Novo Nome\",\n  \"descricao\": \"Descrição atualizada\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_grupos_delete",
+      "parentId": "fld_p_grupos",
+      "name": "Remover grupo",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/grupos/{{ grupo_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_p_lugares", "parentId": "fld_prod", "name": "Lugares", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_lugares_list",
+      "parentId": "fld_p_lugares",
+      "name": "Listar lugares",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {"name": "grupo_id", "value": "{{ grupo_id }}", "enabled": true},
+        {"name": "pagina", "value": "1", "enabled": true},
+        {"name": "tamanho_pagina", "value": "20", "enabled": true},
+        {"name": "busca", "value": "", "enabled": false},
+        {"name": "categoria", "value": "", "enabled": false},
+        {"name": "bairro", "value": "", "enabled": false},
+        {"name": "status", "value": "quero_ir", "enabled": false},
+        {"name": "favorito", "value": "true", "enabled": false},
+        {"name": "faixa_preco", "value": "2", "enabled": false},
+        {"name": "faixa_preco_min", "value": "1", "enabled": false},
+        {"name": "faixa_preco_max", "value": "3", "enabled": false},
+        {"name": "ordenar_por", "value": "criado_em", "enabled": false},
+        {"name": "direcao", "value": "desc", "enabled": false}
+      ],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_lugares_create",
+      "parentId": "fld_p_lugares",
+      "name": "Criar lugar",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"grupo_id\": \"{{ grupo_id }}\",\n  \"nome\": \"Cantina do Saber\",\n  \"categoria\": \"Italiana\",\n  \"bairro\": \"Pinheiros\",\n  \"cidade\": \"São Paulo\",\n  \"faixa_preco\": 2,\n  \"link\": \"https://exemplo.com\",\n  \"notas\": \"Ótima massa!\",\n  \"status\": \"quero_ir\",\n  \"favorito\": false,\n  \"adicionado_por\": \"Filipe\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_lugares_get",
+      "parentId": "fld_p_lugares",
+      "name": "Buscar lugar",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/{{ lugar_id }}",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_lugares_patch",
+      "parentId": "fld_p_lugares",
+      "name": "Atualizar lugar",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/{{ lugar_id }}",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"status\": \"fomos\",\n  \"favorito\": true,\n  \"notas\": \"Fomos e amamos!\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_lugares_delete",
+      "parentId": "fld_p_lugares",
+      "name": "Remover lugar",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/{{ lugar_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "fld_p_fotos", "parentId": "fld_p_lugares", "name": "Fotos", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_fotos_upload",
+      "parentId": "fld_p_fotos",
+      "name": "Upload de foto",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/{{ lugar_id }}/fotos",
+      "method": "POST",
+      "body": { "mimeType": "multipart/form-data", "params": [{"name": "file", "value": "", "fileName": "", "type": "file"}] },
+      "parameters": [{"name": "definir_como_capa", "value": "false", "enabled": true}],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_fotos_capa",
+      "parentId": "fld_p_fotos",
+      "name": "Definir como capa",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/{{ lugar_id }}/fotos/{{ foto_id }}/capa",
+      "method": "PATCH", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_fotos_reordenar",
+      "parentId": "fld_p_fotos",
+      "name": "Reordenar fotos",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/{{ lugar_id }}/fotos/reordenar",
+      "method": "PATCH",
+      "body": { "mimeType": "application/json", "text": "{\n  \"ids_fotos\": [\"id_3\", \"id_1\", \"id_2\"]\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_fotos_delete",
+      "parentId": "fld_p_fotos",
+      "name": "Remover foto",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/lugares/{{ lugar_id }}/fotos/{{ foto_id }}",
+      "method": "DELETE", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_p_home", "parentId": "fld_prod", "name": "Home", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_home",
+      "parentId": "fld_p_home",
+      "name": "Resumo da Home",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/home/",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {"name": "grupo_id", "value": "{{ grupo_id }}", "enabled": true},
+        {"name": "limite", "value": "5", "enabled": true}
+      ],
+      "headers": [], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_p_chat", "parentId": "fld_prod", "name": "Chat (OpenAI)", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_chat",
+      "parentId": "fld_p_chat",
+      "name": "Chat",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/chat",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"message\": \"Sugira um restaurante italiano em SP\",\n  \"history\": []\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+
+    {
+      "_id": "fld_p_google", "parentId": "fld_prod", "name": "Google Maps", "_type": "request_group"
+    },
+    {
+      "_id": "req_p_google_nearby",
+      "parentId": "fld_p_google",
+      "name": "Restaurantes próximos",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/google-maps/restaurants/nearby",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"latitude\": -23.5505,\n  \"longitude\": -46.6333,\n  \"radius_meters\": 1500,\n  \"max_results\": 10\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_google_autocomplete",
+      "parentId": "fld_p_google",
+      "name": "Autocomplete",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/google-maps/places/autocomplete",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"input\": \"Cantina\",\n  \"location_bias\": {\n    \"latitude\": -23.5505,\n    \"longitude\": -46.6333,\n    \"radius_meters\": 5000\n  },\n  \"max_results\": 5\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_google_details",
+      "parentId": "fld_p_google",
+      "name": "Detalhes de um lugar",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/google-maps/places/ChIJ0_mGbzpezpQRhEIbxiGYgSM",
+      "method": "GET", "body": {}, "parameters": [], "headers": [], "authentication": {},
+      "_type": "request"
+    },
+    {
+      "_id": "req_p_google_save",
+      "parentId": "fld_p_google",
+      "name": "Salvar lugar do Google",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/google-maps/places/save",
+      "method": "POST",
+      "body": { "mimeType": "application/json", "text": "{\n  \"place_id\": \"ChIJ0_mGbzpezpQRhEIbxiGYgSM\",\n  \"grupo_id\": \"{{ grupo_id }}\",\n  \"status\": \"quero_ir\",\n  \"favorito\": false,\n  \"notas\": null,\n  \"adicionado_por\": \"Filipe\"\n}" },
+      "parameters": [], "headers": [{"name": "Content-Type", "value": "application/json"}], "authentication": {},
+      "_type": "request"
+    }
+  ]
+}
