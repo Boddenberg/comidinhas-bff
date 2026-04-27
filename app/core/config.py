@@ -16,6 +16,18 @@ class Settings(BaseSettings):
     app_env: str = "local"
     app_version: str = "0.1.0"
 
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://localhost:5180",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:5180",
+        ]
+    )
+    cors_allowed_origin_regex: str = (
+        r"^https://([a-zA-Z0-9-]+\.)*(comidinhas\.app|up\.railway\.app)$"
+    )
+
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
@@ -65,6 +77,16 @@ class Settings(BaseSettings):
             return None
         normalized = value.strip()
         return normalized or None
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def split_cors_origins(cls, value):  # type: ignore[no-untyped-def]
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            return [origin.strip() for origin in stripped.split(",") if origin.strip()]
+        return value
 
     @property
     def is_openai_configured(self) -> bool:
