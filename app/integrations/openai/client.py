@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from typing import Any
@@ -40,6 +41,56 @@ class OpenAIClient:
             )
 
         return text
+
+    async def chat_json(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        schema_name: str,
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._ensure_api_key()
+
+        response = await self._post_responses(
+            payload={
+                "model": model,
+                "instructions": system_prompt,
+                "input": prompt,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": schema_name,
+                        "schema": schema,
+                        "strict": True,
+                    }
+                },
+            }
+        )
+
+        text = self._extract_output_text(response)
+        if not text:
+            raise ExternalServiceError(
+                "openai",
+                "A OpenAI retornou uma resposta JSON vazia.",
+            )
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ExternalServiceError(
+                "openai",
+                "A OpenAI retornou uma resposta que nao e JSON valido.",
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise ExternalServiceError(
+                "openai",
+                "A OpenAI retornou um JSON inesperado.",
+            )
+
+        return payload
 
     def _ensure_api_key(self) -> None:
         if self._settings.is_openai_configured:

@@ -9,6 +9,11 @@ class RankPreference(str, Enum):
     DISTANCE = "DISTANCE"
 
 
+class TextSearchRankPreference(str, Enum):
+    RELEVANCE = "RELEVANCE"
+    DISTANCE = "DISTANCE"
+
+
 class NearbyRestaurantsRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -70,6 +75,26 @@ class LocationBias(BaseModel):
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
     radius_meters: float = Field(default=5000.0, ge=1, le=50000)
+
+
+class TextSearchRestaurantsRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    text_query: str = Field(..., min_length=1, max_length=300)
+    location_bias: LocationBias | None = None
+    included_type: str | None = Field(default="restaurant", max_length=80)
+    strict_type_filtering: bool = False
+    open_now: bool | None = None
+    min_rating: float | None = Field(default=None, ge=0, le=5)
+    price_levels: list[str] = Field(default_factory=list, max_length=4)
+    rank_preference: TextSearchRankPreference | None = None
+    page_size: int = Field(default=10, ge=1, le=20)
+    language_code: str | None = None
+    region_code: str | None = None
+
+
+class TextSearchRestaurantsResponse(BaseModel):
+    places: list[NearbyRestaurant]
 
 
 class PlaceAutocompleteRequest(BaseModel):

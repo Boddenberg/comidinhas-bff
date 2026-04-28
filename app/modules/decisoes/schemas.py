@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.modules.lugares.schemas import LugarResponse
+from app.modules.lugares.schemas import LugarResponse, StatusLugar
 
 
 class EscopoDecisao(str, Enum):
@@ -91,6 +91,148 @@ class DecidirRestauranteResponse(BaseModel):
     alternativas: list[DecisaoRestauranteItem] = Field(default_factory=list)
     total_candidatos: int
     criterios_usados: dict[str, Any] = Field(default_factory=dict)
+    modelo: str
+    provider: str = "openai"
+
+
+class IntencaoPedido(str, Enum):
+    RECOMENDACAO_RESTAURANTE = "recomendacao_restaurante"
+    FORA_ESCOPO = "fora_escopo"
+
+
+class EstrategiaRecomendacao(str, Enum):
+    INTERNA = "interna"
+    GOOGLE = "google"
+    HIBRIDA = "hibrida"
+
+
+class PreferenciaNovidade(str, Enum):
+    AUTO = "auto"
+    NOVO = "novo"
+    SEGURO = "seguro"
+
+
+class EstadoRecomendacao(str, Enum):
+    OPCOES = "opcoes"
+    PRECISA_REFINAR = "precisa_refinar"
+    FORA_ESCOPO = "fora_escopo"
+
+
+class OrigemCandidato(str, Enum):
+    COMIDINHAS = "comidinhas"
+    GOOGLE = "google"
+
+
+class LocalizacaoRecomendacao(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    cidade: str | None = Field(default=None, max_length=80)
+    bairro: str | None = Field(default=None, max_length=80)
+    raio_metros: int = Field(default=8000, ge=100, le=50000)
+
+    @field_validator("cidade", "bairro", mode="before")
+    @classmethod
+    def vazio_para_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class InterpretacaoRecomendacao(BaseModel):
+    intencao: IntencaoPedido = IntencaoPedido.RECOMENDACAO_RESTAURANTE
+    cozinhas: list[str] = Field(default_factory=list)
+    termos_busca: list[str] = Field(default_factory=list)
+    momento: str | None = None
+    localizacao_texto: str | None = None
+    estrategia: EstrategiaRecomendacao = EstrategiaRecomendacao.HIBRIDA
+    precisa_localizacao: bool = False
+    preferencia_novidade: PreferenciaNovidade = PreferenciaNovidade.AUTO
+    preferencias: list[str] = Field(default_factory=list)
+    restricoes: list[str] = Field(default_factory=list)
+    orcamento_max: int | None = Field(default=None, ge=1, le=4)
+    quantidade_pessoas: int | None = Field(default=None, ge=1, le=30)
+    pergunta_refinamento: str | None = None
+    confianca: float = Field(default=0.7, ge=0, le=1)
+
+    @field_validator("cozinhas", "termos_busca", "preferencias", "restricoes", mode="before")
+    @classmethod
+    def normalizar_lista_texto(cls, value: list[str] | None) -> list[str]:
+        return _normalizar_lista_texto(value)
+
+    @field_validator("momento", "localizacao_texto", "pergunta_refinamento", mode="before")
+    @classmethod
+    def vazio_para_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class RecomendarRestaurantesRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    grupo_id: str = Field(..., min_length=8, max_length=64)
+    mensagem: str = Field(..., min_length=1, max_length=1000)
+    perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
+    localizacao: LocalizacaoRecomendacao | None = None
+    permitir_google: bool = True
+    max_resultados: int = Field(default=6, ge=1, le=10)
+    max_candidatos_internos: int = Field(default=80, ge=1, le=100)
+    max_candidatos_google: int = Field(default=10, ge=1, le=20)
+
+    @field_validator("grupo_id", "perfil_id", mode="before")
+    @classmethod
+    def vazio_para_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class CandidatoRestaurante(BaseModel):
+    candidato_id: str
+    origem: OrigemCandidato
+    lugar_id: str | None = None
+    google_place_id: str | None = None
+    nome: str
+    categoria: str | None = None
+    bairro: str | None = None
+    cidade: str | None = None
+    endereco: str | None = None
+    faixa_preco: int | None = Field(default=None, ge=1, le=4)
+    rating: float | None = None
+    user_rating_count: int | None = None
+    status: StatusLugar | None = None
+    favorito: bool = False
+    ja_fomos: bool = False
+    novo_no_app: bool = False
+    aberto_agora: bool | None = None
+    imagem_capa: str | None = None
+    fotos: list[dict[str, Any]] = Field(default_factory=list)
+    link: str | None = None
+    google_maps_uri: str | None = None
+    website_uri: str | None = None
+    telefone: str | None = None
+
+
+class RecomendacaoRestauranteItem(BaseModel):
+    restaurante: CandidatoRestaurante
+    motivo: str
+    pontos_fortes: list[str] = Field(default_factory=list)
+    ressalvas: list[str] = Field(default_factory=list)
+    confianca: float = Field(default=0.7, ge=0, le=1)
+
+
+class RecomendarRestaurantesResponse(BaseModel):
+    grupo_id: str
+    estado: EstadoRecomendacao
+    mensagem: str
+    interpretacao: InterpretacaoRecomendacao
+    resumo: str | None = None
+    pergunta_refinamento: str | None = None
+    opcoes: list[RecomendacaoRestauranteItem] = Field(default_factory=list)
+    total_candidatos: int = 0
+    fontes_usadas: list[OrigemCandidato] = Field(default_factory=list)
     modelo: str
     provider: str = "openai"
 

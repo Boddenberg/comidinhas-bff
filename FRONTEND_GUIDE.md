@@ -545,6 +545,231 @@ Campos opcionais importantes:
 
 ---
 
+## 0.11 IA Recomenda Restaurantes por Mensagem (no-auth)
+
+Use este endpoint para a experiencia de chat/busca natural:
+
+> "estou com vontade de comer arabe hoje"
+
+O backend interpreta a mensagem com IA, busca restaurantes salvos no Supabase, busca opcoes externas no Google Places quando fizer sentido, remove duplicatas e devolve cards prontos para a UI.
+
+```http
+POST /ia/recomendar-restaurantes
+Content-Type: application/json
+```
+
+### Payload recomendado
+
+```json
+{
+  "grupo_id": "uuid-do-contexto-selecionado",
+  "mensagem": "estou com vontade de comer arabe hoje",
+  "perfil_id": "uuid-do-perfil-opcional",
+  "localizacao": {
+    "latitude": -23.55052,
+    "longitude": -46.633308,
+    "cidade": "Sao Paulo",
+    "bairro": "Pinheiros",
+    "raio_metros": 8000
+  },
+  "permitir_google": true,
+  "max_resultados": 6,
+  "max_candidatos_internos": 80,
+  "max_candidatos_google": 10
+}
+```
+
+Campos obrigatorios:
+- `grupo_id`
+- `mensagem`
+
+Campos opcionais importantes:
+- `localizacao`: mande sempre que o usuario permitir. Se nao tiver `latitude/longitude`, mande pelo menos `cidade` ou `bairro`.
+- `permitir_google`: use `true` para descobrir restaurantes fora da base do app.
+- `max_resultados`: quantidade de cards finais.
+
+### Como capturar localizacao no front
+
+```ts
+async function getBrowserLocation(): Promise<{
+  latitude: number
+  longitude: number
+} | null> {
+  if (!navigator.geolocation) return null
+
+  return await new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) =>
+        resolve({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+        }),
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 },
+    )
+  })
+}
+```
+
+Se o usuario negar permissao, ainda chame o endpoint com `cidade` se o app ja souber a cidade do perfil/contexto. Se nao tiver nenhuma localizacao, o backend pode responder `estado="precisa_refinar"`.
+
+### Chamada sugerida
+
+```ts
+type RecommendRequest = {
+  grupo_id: string
+  mensagem: string
+  perfil_id?: string
+  localizacao?: {
+    latitude?: number
+    longitude?: number
+    cidade?: string
+    bairro?: string
+    raio_metros?: number
+  }
+  permitir_google?: boolean
+  max_resultados?: number
+}
+
+async function recommendRestaurants(payload: RecommendRequest) {
+  const response = await fetch(`${API_URL}/ia/recomendar-restaurantes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    throw await response.json()
+  }
+
+  return response.json()
+}
+```
+
+### Estados da resposta
+
+| `estado` | O que fazer no front |
+|---|---|
+| `opcoes` | Renderize os cards em `opcoes`. |
+| `precisa_refinar` | Mostre `pergunta_refinamento` e mantenha a conversa aberta. |
+| `fora_escopo` | Mostre `pergunta_refinamento` como redirecionamento leve para comida/restaurantes. |
+
+### Exemplo de resposta com opcoes
+
+```json
+{
+  "grupo_id": "uuid-do-contexto",
+  "estado": "opcoes",
+  "mensagem": "estou com vontade de comer arabe hoje",
+  "interpretacao": {
+    "intencao": "recomendacao_restaurante",
+    "cozinhas": ["arabe"],
+    "termos_busca": ["restaurante arabe"],
+    "momento": "hoje",
+    "localizacao_texto": null,
+    "estrategia": "hibrida",
+    "precisa_localizacao": false,
+    "preferencia_novidade": "auto",
+    "preferencias": [],
+    "restricoes": [],
+    "orcamento_max": null,
+    "quantidade_pessoas": null,
+    "pergunta_refinamento": null,
+    "confianca": 0.92
+  },
+  "resumo": "Encontrei opcoes arabes para hoje.",
+  "pergunta_refinamento": null,
+  "opcoes": [
+    {
+      "restaurante": {
+        "candidato_id": "comidinhas:uuid-lugar",
+        "origem": "comidinhas",
+        "lugar_id": "uuid-lugar",
+        "google_place_id": null,
+        "nome": "Casa Arabe Salva",
+        "categoria": "Arabe",
+        "bairro": "Pinheiros",
+        "cidade": "Sao Paulo",
+        "endereco": null,
+        "faixa_preco": 2,
+        "rating": null,
+        "user_rating_count": null,
+        "status": "quero_voltar",
+        "favorito": true,
+        "ja_fomos": true,
+        "novo_no_app": false,
+        "aberto_agora": null,
+        "imagem_capa": "https://...",
+        "fotos": [],
+        "link": "https://...",
+        "google_maps_uri": null,
+        "website_uri": null,
+        "telefone": null
+      },
+      "motivo": "Combina com o pedido e e uma opcao segura do grupo.",
+      "pontos_fortes": ["Favorito", "Ja conhecido"],
+      "ressalvas": [],
+      "confianca": 0.84
+    }
+  ],
+  "total_candidatos": 12,
+  "fontes_usadas": ["comidinhas", "google"],
+  "modelo": "gpt-4o-mini",
+  "provider": "openai"
+}
+```
+
+### Renderizacao dos cards
+
+Use `restaurante.origem` para decidir os badges e a acao primaria:
+
+| Campo | Uso na UI |
+|---|---|
+| `origem="comidinhas"` | Lugar ja salvo; use `lugar_id` para abrir detalhe interno. |
+| `origem="google"` | Lugar descoberto no Google; mostre CTA "Salvar no Comidinhas". |
+| `favorito` | Badge "favorito". |
+| `ja_fomos` | Badge "ja fomos" ou "queremos voltar". |
+| `novo_no_app` | Badge "novo". |
+| `aberto_agora` | Badge "aberto agora" quando `true`; se `false`, mostre "ver horarios" ou omita. |
+| `rating` e `user_rating_count` | Mostre avaliacao do Google quando existir. |
+
+### Salvar uma opcao do Google
+
+Quando o usuario tocar em "Salvar no Comidinhas" para uma opcao `origem="google"`:
+
+```ts
+async function saveGoogleRecommendation(restaurante: any, grupoId: string, perfilId?: string) {
+  const response = await fetch(`${API_URL}/google-maps/places/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      place_id: restaurante.google_place_id,
+      grupo_id: grupoId,
+      status: 'quero_ir',
+      favorito: false,
+      notas: 'Salvo a partir da recomendacao da IA',
+      adicionado_por_perfil_id: perfilId,
+    }),
+  })
+
+  if (!response.ok) throw await response.json()
+  return response.json()
+}
+```
+
+Depois de salvar, troque o card para o estado interno usando o `LugarResponse` retornado.
+
+### Fluxo de conversa sugerido
+
+1. Usuario digita uma frase livre.
+2. Front tenta obter geolocalizacao ou usa cidade do perfil.
+3. Front chama `/ia/recomendar-restaurantes`.
+4. Se `estado="precisa_refinar"`, renderize a pergunta como resposta da IA.
+5. Quando o usuario responder, chame de novo com a nova mensagem somada ao contexto visivel. Exemplo: `"Pedido anterior: arabe hoje. Resposta do usuario: perto de Pinheiros"`.
+6. Se `estado="opcoes"`, renderize cards, motivo, badges e CTAs.
+
+---
+
 Todo endpoint autenticado exige o header:
 ```
 Authorization: Bearer <access_token>

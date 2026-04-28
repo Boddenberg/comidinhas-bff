@@ -37,6 +37,33 @@ create unique index perfis_email_lower_idx
   on public.perfis (lower(email))
   where email is not null;
 
+-- Gera codigos numericos curtos para convite/solicitacao de entrada.
+create or replace function public.gerar_codigo_grupo()
+returns text
+language plpgsql
+as $$
+declare
+  v_codigo text;
+  v_tentativa int := 0;
+begin
+  loop
+    v_codigo := lpad(floor(random() * 1000000)::int::text, 6, '0');
+    exit when not exists (
+      select 1
+      from public.grupos
+      where codigo = v_codigo
+    );
+
+    v_tentativa := v_tentativa + 1;
+    if v_tentativa >= 20 then
+      raise exception 'Nao foi possivel gerar um codigo unico de grupo';
+    end if;
+  end loop;
+
+  return v_codigo;
+end;
+$$;
+
 -- ============================================================
 -- 3. Tabela: grupos
 -- Um grupo e o contexto selecionavel do app:
@@ -47,21 +74,31 @@ create unique index perfis_email_lower_idx
 -- Membros ficam embutidos em JSON para manter o modelo no-auth
 -- simples. Exemplo:
 -- {"perfil_id":"uuid","nome":"Filipe","email":"filipe@...","papel":"dono"}
+--
+-- Solicitacoes de entrada tambem ficam em JSON:
+-- {"id":"...","perfil_id":"uuid","status":"pendente","solicitado_em":"..."}
 -- ============================================================
 create table public.grupos (
   id              uuid        primary key default gen_random_uuid(),
+  codigo          text        not null default public.gerar_codigo_grupo()
+                              check (codigo ~ '^[0-9]{6}$'),
   nome            text        not null check (char_length(nome) between 1 and 80),
   tipo            text        not null default 'casal'
                               check (tipo in ('individual', 'casal', 'grupo')),
   descricao       text        check (descricao is null or char_length(descricao) <= 500),
+  foto_url        text,
+  foto_caminho    text,
   dono_perfil_id  uuid        references public.perfis (id) on delete set null,
   membros         jsonb       not null default '[]'::jsonb,
+  solicitacoes    jsonb       not null default '[]'::jsonb,
   criado_em       timestamptz not null default now(),
   atualizado_em   timestamptz not null default now()
 );
 
+create unique index grupos_codigo_idx on public.grupos (codigo);
 create index grupos_dono_idx on public.grupos (dono_perfil_id);
 create index grupos_membros_gin_idx on public.grupos using gin (membros);
+create index grupos_solicitacoes_gin_idx on public.grupos using gin (solicitacoes);
 
 alter table public.perfis
   add constraint perfis_grupo_individual_id_fkey

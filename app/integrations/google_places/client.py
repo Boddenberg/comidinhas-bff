@@ -22,6 +22,7 @@ from app.modules.google_places.schemas import (
     PredictionText,
     QueryPrediction,
     RestaurantLocation,
+    TextSearchRestaurantsRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class GooglePlacesClient:
             "places.photos",
         ]
     )
+    TEXT_SEARCH_FIELD_MASK = SEARCH_FIELD_MASK
 
     def __init__(self, http_client: httpx.AsyncClient, settings: Settings) -> None:
         self._http_client = http_client
@@ -71,6 +73,31 @@ class GooglePlacesClient:
             *(self._fetch_place_photos(place.get("photos")) for place in raw_places)
         )
 
+        return [
+            self._attach_photos(place, photos)
+            for place, photos in zip(places, photos_by_place, strict=True)
+        ]
+
+    async def search_text_restaurants(
+        self,
+        request: TextSearchRestaurantsRequest,
+    ) -> list[NearbyRestaurant]:
+        self._ensure_api_key()
+        logger.info(
+            "google_places.search_text.start query_len=%s page_size=%s",
+            len(request.text_query),
+            request.page_size,
+        )
+
+        payload = self._build_text_search_payload(request)
+        raw_places = await self._search_text(payload)
+        places = [self._map_place(place) for place in raw_places]
+
+        photos_by_place = await asyncio.gather(
+            *(self._fetch_place_photos(place.get("photos")) for place in raw_places)
+        )
+
+        logger.info("google_places.search_text.end places=%s", len(places))
         return [
             self._attach_photos(place, photos)
             for place, photos in zip(places, photos_by_place, strict=True)
@@ -500,6 +527,17 @@ class GooglePlacesClient:
             return result
         return []
 
+    async def _search_text(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = await self._post_json(
+            "places:searchText",
+            body=payload,
+            field_mask=self.TEXT_SEARCH_FIELD_MASK,
+        )
+        places = raw.get("places", [])
+        if isinstance(places, list):
+            return [place for place in places if isinstance(place, dict)]
+        return []
+
     def _build_search_payload(
         self,
         request: NearbyRestaurantsRequest,
@@ -525,6 +563,40 @@ class GooglePlacesClient:
 
         if request.excluded_types:
             payload["excludedTypes"] = request.excluded_types
+
+        return payload
+
+    def _build_text_search_payload(
+        self,
+        request: TextSearchRestaurantsRequest,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "textQuery": request.text_query,
+            "pageSize": request.page_size,
+            "languageCode": request.language_code
+            or self._settings.google_places_default_language_code,
+            "regionCode": request.region_code
+            or self._settings.google_places_default_region_code,
+        }
+
+        if request.included_type:
+            payload["includedType"] = request.included_type
+            payload["strictTypeFiltering"] = request.strict_type_filtering
+
+        if request.location_bias:
+            payload["locationBias"] = self._build_circle(request.location_bias)
+
+        if request.open_now is not None:
+            payload["openNow"] = request.open_now
+
+        if request.min_rating is not None:
+            payload["minRating"] = request.min_rating
+
+        if request.price_levels:
+            payload["priceLevels"] = request.price_levels
+
+        if request.rank_preference:
+            payload["rankPreference"] = request.rank_preference.value
 
         return payload
 

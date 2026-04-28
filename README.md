@@ -10,7 +10,7 @@ Scaffold inicial de um BFF/BFA em Python usando FastAPI.
 - endpoint `POST /api/v1/chat` para OpenAI
 - endpoint `POST /api/v1/google-maps/restaurants/nearby` para Google Places
 - endpoint `POST /api/v1/infobip/whatsapp/template` para envio de template WhatsApp via Infobip
-- endpoints no-auth de perfis, contextos, lugares, guias e decisao por IA em `/api/v1/perfis`, `/api/v1/grupos`, `/api/v1/lugares`, `/api/v1/guias` e `/api/v1/ia/decidir-restaurante`
+- endpoints no-auth de perfis, contextos, lugares, guias, decisao e recomendacao por IA em `/api/v1/perfis`, `/api/v1/grupos`, `/api/v1/lugares`, `/api/v1/guias`, `/api/v1/ia/decidir-restaurante` e `/api/v1/ia/recomendar-restaurantes`
 - docs automaticas em `http://127.0.0.1:8000/docs`
 - `main.py` na raiz para rodar direto no PyCharm
 
@@ -69,6 +69,8 @@ Campos esperados:
 - `SUPABASE_KEY`
 - `SUPABASE_PROFILE_BUCKET`
 - `SUPABASE_PROFILE_PHOTO_MAX_BYTES`
+- `SUPABASE_GROUP_BUCKET`
+- `SUPABASE_GROUP_PHOTO_MAX_BYTES`
 - `INFOBIP_BASE_URL`
 - `INFOBIP_API_KEY`
 - `INFOBIP_WHATSAPP_FROM`
@@ -131,11 +133,21 @@ pytest
 
 Rode o SQL de [supabase/schema.sql](supabase/schema.sql) no SQL Editor do Supabase. Ele cria `public.perfis`, `public.grupos`, `public.lugares` e `public.guias` sem depender de Supabase Auth.
 
+Se o banco no-auth ja existe, rode tambem [supabase/group_join_requests_setup.sql](supabase/group_join_requests_setup.sql) para adicionar codigo curto de grupo, foto do grupo e solicitacoes de entrada sem dropar dados.
+
 O fluxo principal fica:
 
 - `POST /api/v1/perfis/` cadastra uma pessoa e cria automaticamente o espaco individual dela.
 - `GET /api/v1/perfis/{perfil_id}/contextos` lista os espacos selecionaveis do perfil.
-- `POST /api/v1/grupos/` cria um contexto `individual`, `casal` ou `grupo` com membros ligados por `perfil_id`.
+- `POST /api/v1/grupos/` cria um contexto `individual`, `casal` ou `grupo` com membros ligados por `perfil_id`; para `grupo`, informe `dono_perfil_id`.
+- `GET /api/v1/grupos/codigo/{codigo}` busca um grupo pelo codigo numerico de 6 digitos.
+- `POST /api/v1/grupos/codigo/{codigo}/solicitacoes` cria uma solicitacao de entrada para o dono aprovar.
+- `GET /api/v1/grupos/{grupo_id}/solicitacoes?responsavel_perfil_id=...` lista solicitacoes (somente dono).
+- `POST /api/v1/grupos/{grupo_id}/solicitacoes/{solicitacao_id}/aceitar` aceita uma solicitacao e adiciona o perfil como membro.
+- `POST /api/v1/grupos/{grupo_id}/solicitacoes/{solicitacao_id}/recusar` recusa uma solicitacao.
+- `PATCH /api/v1/grupos/{grupo_id}/membros/{perfil_id}/papel` permite ao dono tornar um membro `administrador` ou voltar para `membro`.
+- `PATCH /api/v1/grupos/{grupo_id}` atualiza nome, descricao ou foto via URL quando `responsavel_perfil_id` for dono ou administrador; mudancas de dono/membros continuam restritas ao dono.
+- `POST /api/v1/grupos/{grupo_id}/foto?responsavel_perfil_id=...` envia ou substitui a foto do grupo (dono ou administrador).
 - `GET /api/v1/grupos/?perfil_id=...` lista os contextos de um perfil.
 - `GET /api/v1/lugares/?grupo_id=...` lista restaurantes do contexto selecionado.
 - `POST /api/v1/lugares/` adiciona restaurante ao contexto; use `adicionado_por_perfil_id` para registrar quem adicionou.
@@ -144,6 +156,7 @@ O fluxo principal fica:
 - `POST /api/v1/guias/{guia_id}/lugares` adiciona restaurante ao guia.
 - `PATCH /api/v1/guias/{guia_id}/lugares/reordenar` reordena restaurantes do guia.
 - `POST /api/v1/ia/decidir-restaurante` escolhe restaurante com IA por escopo: `todos`, `favoritos`, `quero_ir` ou `guia`.
+- `POST /api/v1/ia/recomendar-restaurantes` interpreta uma mensagem livre, busca no Supabase e no Google Places, e retorna opcoes estruturadas para o front.
 - `GET /api/v1/home/?grupo_id=...` retorna o agregado do contexto selecionado.
 
 ### Legado com auth

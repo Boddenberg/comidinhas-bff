@@ -7,7 +7,11 @@ from app.core.config import Settings
 from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.infobip.client import InfobipClient
 from app.integrations.openai.client import OpenAIClient
-from app.modules.google_places.schemas import NearbyRestaurantsRequest
+from app.modules.google_places.schemas import (
+    LocationBias,
+    NearbyRestaurantsRequest,
+    TextSearchRestaurantsRequest,
+)
 from app.modules.infobip.schemas import SendWhatsAppTemplateRequest
 
 
@@ -180,6 +184,66 @@ async def test_google_places_client_maps_place_details_photos() -> None:
         "https://images.example.com/place-1.jpg",
         "https://images.example.com/place-1-2.jpg",
     ]
+
+
+@pytest.mark.anyio
+async def test_google_places_client_searches_restaurants_by_text() -> None:
+    seen_body = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_body
+        if request.url.path.endswith("/places:searchText"):
+            seen_body = json.loads(request.content.decode())
+            assert request.headers["X-Goog-FieldMask"].startswith("places.id")
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "places": [
+                        {
+                            "id": "place-1",
+                            "displayName": {"text": "Arabe Central"},
+                            "formattedAddress": "Rua A, 123",
+                            "rating": 4.6,
+                            "userRatingCount": 450,
+                            "priceLevel": "PRICE_LEVEL_MODERATE",
+                            "primaryType": "middle_eastern_restaurant",
+                            "googleMapsUri": "https://maps.google.com/?cid=1",
+                            "regularOpeningHours": {"openNow": True},
+                        }
+                    ]
+                },
+            )
+
+        return httpx.Response(status_code=404)
+
+    settings = Settings(google_maps_api_key="maps-key")
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(
+        base_url="https://places.googleapis.com",
+        transport=transport,
+    ) as client:
+        google_places_client = GooglePlacesClient(
+            http_client=client,
+            settings=settings,
+        )
+        response = await google_places_client.search_text_restaurants(
+            TextSearchRestaurantsRequest(
+                text_query="restaurante arabe em Sao Paulo",
+                location_bias=LocationBias(
+                    latitude=-23.55,
+                    longitude=-46.63,
+                    radius_meters=8000,
+                ),
+                page_size=5,
+            )
+        )
+
+    assert seen_body["textQuery"] == "restaurante arabe em Sao Paulo"
+    assert seen_body["includedType"] == "restaurant"
+    assert seen_body["pageSize"] == 5
+    assert response[0].display_name == "Arabe Central"
+    assert response[0].open_now is True
 
 
 @pytest.mark.anyio

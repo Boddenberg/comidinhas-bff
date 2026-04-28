@@ -62,6 +62,12 @@ class Settings(BaseSettings):
         ge=1,
         le=10_485_760,
     )
+    supabase_group_bucket: str = "group-photos"
+    supabase_group_photo_max_bytes: int = Field(
+        default=2_097_152,
+        ge=1,
+        le=10_485_760,
+    )
     supabase_place_photos_bucket: str = "place-photos"
     supabase_place_photo_max_bytes: int = Field(
         default=5_242_880,
