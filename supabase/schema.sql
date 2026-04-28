@@ -1,187 +1,247 @@
 -- ============================================================
--- Comidinhas — Schema principal (sem autenticação)
--- Aplica limpo: dropa tudo e recria com estrutura simplificada
+-- Comidinhas - schema principal sem autenticacao
+-- Aplica limpo: dropa tudo e recria a estrutura no-auth.
 -- ============================================================
+
+create extension if not exists pgcrypto;
 
 -- 1. Remove tabelas antigas (ordem importa por causa das FKs)
-DROP TABLE IF EXISTS public.place_photos  CASCADE;
-DROP TABLE IF EXISTS public.places        CASCADE;
-DROP TABLE IF EXISTS public.group_members CASCADE;
-DROP TABLE IF EXISTS public.groups        CASCADE;
-
--- Remove coluna legada de profiles (se existir)
-ALTER TABLE public.profiles
-  DROP COLUMN IF EXISTS active_group_id;
+drop table if exists public.place_photos cascade;
+drop table if exists public.places cascade;
+drop table if exists public.group_members cascade;
+drop table if exists public.groups cascade;
+drop table if exists public.guias cascade;
+drop table if exists public.lugares cascade;
+drop table if exists public.grupos cascade;
+drop table if exists public.perfis cascade;
 
 -- ============================================================
--- 2. Tabela: grupos
--- Cada grupo é um "espaço compartilhado" (casal ou grupo de amigos).
--- Membros ficam embutidos como JSON — sem tabela separada.
+-- 2. Tabela: perfis
+-- Cada cadastro individual vira um perfil e ganha um espaco
+-- individual em public.grupos.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS public.grupos (
-  id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  nome         text        NOT NULL CHECK (char_length(nome) BETWEEN 1 AND 80),
-  tipo         text        NOT NULL DEFAULT 'casal'
-                           CHECK (tipo IN ('casal', 'grupo')),
-  descricao    text        CHECK (descricao IS NULL OR char_length(descricao) <= 500),
-  membros      jsonb       NOT NULL DEFAULT '[]',
-  -- cada membro: {"nome": "Filipe", "email": "filipe@..."}
-  criado_em    timestamptz NOT NULL DEFAULT now(),
-  atualizado_em timestamptz NOT NULL DEFAULT now()
+create table public.perfis (
+  id                  uuid        primary key default gen_random_uuid(),
+  nome                text        not null check (char_length(nome) between 1 and 120),
+  email               text        check (email is null or char_length(email) <= 255),
+  bio                 text        check (bio is null or char_length(bio) <= 500),
+  cidade              text        check (cidade is null or char_length(cidade) <= 80),
+  foto_url            text,
+  foto_caminho        text,
+  grupo_individual_id uuid,
+  criado_em           timestamptz not null default now(),
+  atualizado_em       timestamptz not null default now()
 );
 
+create unique index perfis_email_lower_idx
+  on public.perfis (lower(email))
+  where email is not null;
+
 -- ============================================================
--- 3. Tabela: lugares
--- Restaurantes / bares / cafés do grupo.
--- Fotos ficam embutidas como JSON — sem tabela separada.
+-- 3. Tabela: grupos
+-- Um grupo e o contexto selecionavel do app:
+-- - individual: apenas uma pessoa
+-- - casal: duas pessoas
+-- - grupo: tres ou mais pessoas, ou um grupo flexivel
+--
+-- Membros ficam embutidos em JSON para manter o modelo no-auth
+-- simples. Exemplo:
+-- {"perfil_id":"uuid","nome":"Filipe","email":"filipe@...","papel":"dono"}
 -- ============================================================
-CREATE TABLE IF NOT EXISTS public.lugares (
-  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  grupo_id      uuid        NOT NULL REFERENCES public.grupos (id) ON DELETE CASCADE,
-  nome          text        NOT NULL CHECK (char_length(nome) BETWEEN 1 AND 120),
-  categoria     text        CHECK (categoria IS NULL OR char_length(categoria) <= 80),
-  bairro        text        CHECK (bairro IS NULL OR char_length(bairro) <= 80),
-  cidade        text        CHECK (cidade IS NULL OR char_length(cidade) <= 80),
-  faixa_preco   smallint    CHECK (faixa_preco IS NULL OR faixa_preco BETWEEN 1 AND 4),
-  link          text        CHECK (link IS NULL OR char_length(link) <= 500),
-  notas         text        CHECK (notas IS NULL OR char_length(notas) <= 2000),
-  status        text        NOT NULL DEFAULT 'quero_ir'
-                            CHECK (status IN ('quero_ir', 'fomos', 'quero_voltar', 'nao_curti')),
-  favorito      boolean     NOT NULL DEFAULT false,
-  imagem_capa   text,       -- URL pública da foto de capa (espelho de fotos[x].url onde capa=true)
-  fotos         jsonb       NOT NULL DEFAULT '[]',
-  -- cada foto: {"id": "uuid", "url": "https://...", "caminho": "grupos/.../file.jpg", "ordem": 0, "capa": true}
-  adicionado_por text,      -- nome livre de quem adicionou (ex: "Filipe")
-  extra         jsonb       NOT NULL DEFAULT '{}',
-  -- dados extras: {"google_place_id": "...", "avaliacao_google": 4.5, "tipos": ["restaurant"]}
-  criado_em     timestamptz NOT NULL DEFAULT now(),
-  atualizado_em timestamptz NOT NULL DEFAULT now()
+create table public.grupos (
+  id              uuid        primary key default gen_random_uuid(),
+  nome            text        not null check (char_length(nome) between 1 and 80),
+  tipo            text        not null default 'casal'
+                              check (tipo in ('individual', 'casal', 'grupo')),
+  descricao       text        check (descricao is null or char_length(descricao) <= 500),
+  dono_perfil_id  uuid        references public.perfis (id) on delete set null,
+  membros         jsonb       not null default '[]'::jsonb,
+  criado_em       timestamptz not null default now(),
+  atualizado_em   timestamptz not null default now()
 );
 
--- Índices úteis
-CREATE INDEX IF NOT EXISTS lugares_grupo_idx     ON public.lugares (grupo_id);
-CREATE INDEX IF NOT EXISTS lugares_status_idx    ON public.lugares (grupo_id, status);
-CREATE INDEX IF NOT EXISTS lugares_favorito_idx  ON public.lugares (grupo_id, favorito) WHERE favorito;
-CREATE INDEX IF NOT EXISTS lugares_nome_idx      ON public.lugares USING gin (to_tsvector('portuguese', nome));
+create index grupos_dono_idx on public.grupos (dono_perfil_id);
+create index grupos_membros_gin_idx on public.grupos using gin (membros);
+
+alter table public.perfis
+  add constraint perfis_grupo_individual_id_fkey
+  foreign key (grupo_individual_id)
+  references public.grupos (id)
+  on delete set null;
 
 -- ============================================================
--- 4. Trigger: atualiza atualizado_em automaticamente
+-- 4. Tabela: lugares
+-- Restaurantes / bares / cafes do contexto selecionado.
 -- ============================================================
-CREATE OR REPLACE FUNCTION public.atualizar_timestamp()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-  NEW.atualizado_em = now();
-  RETURN NEW;
-END;
+create table public.lugares (
+  id                         uuid        primary key default gen_random_uuid(),
+  grupo_id                   uuid        not null references public.grupos (id) on delete cascade,
+  nome                       text        not null check (char_length(nome) between 1 and 120),
+  categoria                  text        check (categoria is null or char_length(categoria) <= 80),
+  bairro                     text        check (bairro is null or char_length(bairro) <= 80),
+  cidade                     text        check (cidade is null or char_length(cidade) <= 80),
+  faixa_preco                smallint    check (faixa_preco is null or faixa_preco between 1 and 4),
+  link                       text        check (link is null or char_length(link) <= 500),
+  notas                      text        check (notas is null or char_length(notas) <= 2000),
+  status                     text        not null default 'quero_ir'
+                                          check (status in ('quero_ir', 'fomos', 'quero_voltar', 'nao_curti')),
+  favorito                   boolean     not null default false,
+  imagem_capa                text,
+  fotos                      jsonb       not null default '[]'::jsonb,
+  adicionado_por             text,
+  adicionado_por_perfil_id   uuid        references public.perfis (id) on delete set null,
+  extra                      jsonb       not null default '{}'::jsonb,
+  criado_em                  timestamptz not null default now(),
+  atualizado_em              timestamptz not null default now()
+);
+
+create index lugares_grupo_idx on public.lugares (grupo_id);
+create index lugares_status_idx on public.lugares (grupo_id, status);
+create index lugares_favorito_idx on public.lugares (grupo_id, favorito) where favorito;
+create index lugares_adicionado_por_idx on public.lugares (adicionado_por_perfil_id);
+create index lugares_nome_idx on public.lugares using gin (to_tsvector('portuguese', nome));
+
+-- ============================================================
+-- 5. Tabela: guias
+-- Guias sao colecoes customizadas de lugares dentro de um contexto.
+-- A ordem dos restaurantes e preservada em lugar_ids.
+-- ============================================================
+create table public.guias (
+  id              uuid        primary key default gen_random_uuid(),
+  grupo_id        uuid        not null references public.grupos (id) on delete cascade,
+  nome            text        not null check (char_length(nome) between 1 and 80),
+  descricao       text        check (descricao is null or char_length(descricao) <= 500),
+  lugar_ids       jsonb       not null default '[]'::jsonb,
+  criado_em       timestamptz not null default now(),
+  atualizado_em   timestamptz not null default now()
+);
+
+create index guias_grupo_idx on public.guias (grupo_id);
+create index guias_lugar_ids_gin_idx on public.guias using gin (lugar_ids);
+
+-- ============================================================
+-- 6. Trigger: atualiza atualizado_em automaticamente
+-- ============================================================
+create or replace function public.atualizar_timestamp()
+returns trigger language plpgsql as $$
+begin
+  new.atualizado_em = now();
+  return new;
+end;
 $$;
 
-DROP TRIGGER IF EXISTS trg_grupos_atualizado_em   ON public.grupos;
-DROP TRIGGER IF EXISTS trg_lugares_atualizado_em  ON public.lugares;
+create trigger trg_perfis_atualizado_em
+  before update on public.perfis
+  for each row execute function public.atualizar_timestamp();
 
-CREATE TRIGGER trg_grupos_atualizado_em
-  BEFORE UPDATE ON public.grupos
-  FOR EACH ROW EXECUTE FUNCTION public.atualizar_timestamp();
+create trigger trg_grupos_atualizado_em
+  before update on public.grupos
+  for each row execute function public.atualizar_timestamp();
 
-CREATE TRIGGER trg_lugares_atualizado_em
-  BEFORE UPDATE ON public.lugares
-  FOR EACH ROW EXECUTE FUNCTION public.atualizar_timestamp();
+create trigger trg_lugares_atualizado_em
+  before update on public.lugares
+  for each row execute function public.atualizar_timestamp();
+
+create trigger trg_guias_atualizado_em
+  before update on public.guias
+  for each row execute function public.atualizar_timestamp();
 
 -- ============================================================
--- 5. Desabilita RLS (app sem autenticação — service role key)
+-- 7. Desabilita RLS (app sem autenticacao, usando service role)
 -- ============================================================
-ALTER TABLE public.grupos  DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.lugares DISABLE ROW LEVEL SECURITY;
+alter table public.perfis disable row level security;
+alter table public.grupos disable row level security;
+alter table public.lugares disable row level security;
+alter table public.guias disable row level security;
 
 -- ============================================================
--- 6. Função home_summary — agrega dados para a tela inicial
+-- 8. Funcao home_summary - agregado para a tela inicial
 -- ============================================================
-CREATE OR REPLACE FUNCTION public.home_summary(
-  p_grupo_id  uuid,
-  p_top_limit int DEFAULT 5
+create or replace function public.home_summary(
+  p_grupo_id uuid,
+  p_top_limit int default 5
 )
-RETURNS jsonb
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
-DECLARE
-  v_grupo       jsonb;
-  v_contadores  jsonb;
-  v_favoritos   jsonb;
-  v_recentes    jsonb;
-  v_quero_ir    jsonb;
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  v_grupo        jsonb;
+  v_contadores   jsonb;
+  v_favoritos    jsonb;
+  v_recentes     jsonb;
+  v_quero_ir     jsonb;
   v_quero_voltar jsonb;
-BEGIN
-  -- Grupo
-  SELECT to_jsonb(g) INTO v_grupo
-  FROM public.grupos g
-  WHERE g.id = p_grupo_id;
+begin
+  select to_jsonb(g) into v_grupo
+  from public.grupos g
+  where g.id = p_grupo_id;
 
-  IF v_grupo IS NULL THEN
-    RETURN jsonb_build_object('erro', 'Grupo não encontrado');
-  END IF;
+  if v_grupo is null then
+    return jsonb_build_object('erro', 'Grupo nao encontrado');
+  end if;
 
-  -- Contadores
-  SELECT jsonb_build_object(
-    'total',       COUNT(*),
-    'visitados',   COUNT(*) FILTER (WHERE status IN ('fomos', 'quero_voltar', 'nao_curti')),
-    'favoritos',   COUNT(*) FILTER (WHERE favorito),
-    'quero_ir',    COUNT(*) FILTER (WHERE status = 'quero_ir'),
-    'quero_voltar', COUNT(*) FILTER (WHERE status = 'quero_voltar')
-  ) INTO v_contadores
-  FROM public.lugares
-  WHERE grupo_id = p_grupo_id;
+  select jsonb_build_object(
+    'total', count(*),
+    'visitados', count(*) filter (where status in ('fomos', 'quero_voltar', 'nao_curti')),
+    'favoritos', count(*) filter (where favorito),
+    'quero_ir', count(*) filter (where status = 'quero_ir'),
+    'quero_voltar', count(*) filter (where status = 'quero_voltar')
+  ) into v_contadores
+  from public.lugares
+  where grupo_id = p_grupo_id;
 
-  -- Top favoritos
-  SELECT jsonb_agg(row_to_json(l)) INTO v_favoritos
-  FROM (
-    SELECT id, nome, categoria, bairro, cidade, faixa_preco,
-           status, favorito, imagem_capa, adicionado_por, criado_em
-    FROM public.lugares
-    WHERE grupo_id = p_grupo_id AND favorito = true
-    ORDER BY criado_em DESC
-    LIMIT p_top_limit
+  select jsonb_agg(row_to_json(l)) into v_favoritos
+  from (
+    select id, nome, categoria, bairro, cidade, faixa_preco,
+           status, favorito, imagem_capa, adicionado_por,
+           adicionado_por_perfil_id, criado_em
+    from public.lugares
+    where grupo_id = p_grupo_id and favorito = true
+    order by criado_em desc
+    limit p_top_limit
   ) l;
 
-  -- Adicionados recentemente
-  SELECT jsonb_agg(row_to_json(l)) INTO v_recentes
-  FROM (
-    SELECT id, nome, categoria, bairro, cidade, faixa_preco,
-           status, favorito, imagem_capa, adicionado_por, criado_em
-    FROM public.lugares
-    WHERE grupo_id = p_grupo_id
-    ORDER BY criado_em DESC
-    LIMIT p_top_limit
+  select jsonb_agg(row_to_json(l)) into v_recentes
+  from (
+    select id, nome, categoria, bairro, cidade, faixa_preco,
+           status, favorito, imagem_capa, adicionado_por,
+           adicionado_por_perfil_id, criado_em
+    from public.lugares
+    where grupo_id = p_grupo_id
+    order by criado_em desc
+    limit p_top_limit
   ) l;
 
-  -- Lista quero_ir
-  SELECT jsonb_agg(row_to_json(l)) INTO v_quero_ir
-  FROM (
-    SELECT id, nome, categoria, bairro, cidade, faixa_preco,
-           status, favorito, imagem_capa, adicionado_por, criado_em
-    FROM public.lugares
-    WHERE grupo_id = p_grupo_id AND status = 'quero_ir'
-    ORDER BY criado_em DESC
-    LIMIT p_top_limit
+  select jsonb_agg(row_to_json(l)) into v_quero_ir
+  from (
+    select id, nome, categoria, bairro, cidade, faixa_preco,
+           status, favorito, imagem_capa, adicionado_por,
+           adicionado_por_perfil_id, criado_em
+    from public.lugares
+    where grupo_id = p_grupo_id and status = 'quero_ir'
+    order by criado_em desc
+    limit p_top_limit
   ) l;
 
-  -- Lista quero_voltar
-  SELECT jsonb_agg(row_to_json(l)) INTO v_quero_voltar
-  FROM (
-    SELECT id, nome, categoria, bairro, cidade, faixa_preco,
-           status, favorito, imagem_capa, adicionado_por, criado_em
-    FROM public.lugares
-    WHERE grupo_id = p_grupo_id AND status = 'quero_voltar'
-    ORDER BY criado_em DESC
-    LIMIT p_top_limit
+  select jsonb_agg(row_to_json(l)) into v_quero_voltar
+  from (
+    select id, nome, categoria, bairro, cidade, faixa_preco,
+           status, favorito, imagem_capa, adicionado_por,
+           adicionado_por_perfil_id, criado_em
+    from public.lugares
+    where grupo_id = p_grupo_id and status = 'quero_voltar'
+    order by criado_em desc
+    limit p_top_limit
   ) l;
 
-  RETURN jsonb_build_object(
-    'grupo',        v_grupo,
-    'contadores',   v_contadores,
-    'favoritos',    COALESCE(v_favoritos, '[]'::jsonb),
-    'recentes',     COALESCE(v_recentes, '[]'::jsonb),
-    'quero_ir',     COALESCE(v_quero_ir, '[]'::jsonb),
-    'quero_voltar', COALESCE(v_quero_voltar, '[]'::jsonb)
+  return jsonb_build_object(
+    'grupo', v_grupo,
+    'contadores', v_contadores,
+    'favoritos', coalesce(v_favoritos, '[]'::jsonb),
+    'recentes', coalesce(v_recentes, '[]'::jsonb),
+    'quero_ir', coalesce(v_quero_ir, '[]'::jsonb),
+    'quero_voltar', coalesce(v_quero_voltar, '[]'::jsonb)
   );
-END;
+end;
 $$;

@@ -3,19 +3,23 @@ from fastapi import Depends, Request
 
 from app.core.config import Settings, get_settings
 from app.integrations.google_places.client import GooglePlacesClient
+from app.integrations.infobip.client import InfobipClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
 from app.modules.chat.use_cases import ChatWithOpenAIUseCase
+from app.modules.decisoes.use_cases import DecidirRestauranteUseCase
 from app.modules.google_places.use_cases import (
     AutocompletePlacesUseCase,
     GetPlaceDetailsUseCase,
     SavePlaceFromGoogleUseCase,
     SearchNearbyRestaurantsUseCase,
 )
+from app.modules.guias.use_cases import ManageGuiasUseCase
 from app.modules.grupos.use_cases import ManageGruposUseCase
 from app.modules.perfis.use_cases import ManagePerfisUseCase
 from app.modules.groups.use_cases import ManageGroupsUseCase
 from app.modules.home.use_cases import GetHomeSummaryUseCase
+from app.modules.infobip.use_cases import SendWhatsAppTemplateUseCase
 from app.modules.lugares.use_cases import ManageLugaresUseCase
 from app.modules.places.photo_use_cases import ManagePlacePhotosUseCase
 from app.modules.places.use_cases import ManagePlacesUseCase
@@ -55,6 +59,19 @@ def get_google_places_client(
     return GooglePlacesClient(http_client=http_client, settings=settings)
 
 
+def get_infobip_client(
+    http_client: httpx.AsyncClient = Depends(get_http_client),
+    settings: Settings = Depends(get_app_settings),
+) -> InfobipClient:
+    return InfobipClient(http_client=http_client, settings=settings)
+
+
+def get_send_whatsapp_template_use_case(
+    client: InfobipClient = Depends(get_infobip_client),
+) -> SendWhatsAppTemplateUseCase:
+    return SendWhatsAppTemplateUseCase(client=client)
+
+
 def get_nearby_restaurants_use_case(
     client: GooglePlacesClient = Depends(get_google_places_client),
 ) -> SearchNearbyRestaurantsUseCase:
@@ -78,6 +95,18 @@ def get_supabase_client(
     settings: Settings = Depends(get_app_settings),
 ) -> SupabaseClient:
     return SupabaseClient(http_client=http_client, settings=settings)
+
+
+def get_decidir_restaurante_use_case(
+    openai_client: OpenAIClient = Depends(get_openai_client),
+    supabase_client: SupabaseClient = Depends(get_supabase_client),
+    settings: Settings = Depends(get_app_settings),
+) -> DecidirRestauranteUseCase:
+    return DecidirRestauranteUseCase(
+        openai_client=openai_client,
+        supabase_client=supabase_client,
+        model=settings.openai_chat_model,
+    )
 
 
 def get_manage_profiles_use_case(
@@ -126,6 +155,12 @@ def get_manage_lugares_use_case(
     client: SupabaseClient = Depends(get_supabase_client),
 ) -> ManageLugaresUseCase:
     return ManageLugaresUseCase(client=client)
+
+
+def get_manage_guias_use_case(
+    client: SupabaseClient = Depends(get_supabase_client),
+) -> ManageGuiasUseCase:
+    return ManageGuiasUseCase(client=client)
 
 
 def get_save_from_google_use_case(

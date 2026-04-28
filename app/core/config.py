@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     )
     openai_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
 
+    log_level: str = "INFO"
+    log_httpx_level: str = "WARNING"
+    log_uvicorn_access_level: str = "INFO"
+    log_request_body: bool = False
+    log_body_max_chars: int = Field(default=2000, ge=100, le=20000)
+
     google_maps_api_key: str | None = None
     google_places_base_url: str = "https://places.googleapis.com/v1"
     google_places_timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
@@ -64,12 +70,21 @@ class Settings(BaseSettings):
     )
     supabase_place_photos_max_per_place: int = Field(default=10, ge=1, le=30)
 
+    infobip_api_key: str | None = None
+    infobip_base_url: str = "https://55e4jx.api.infobip.com"
+    infobip_timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
+    infobip_whatsapp_from: str | None = None
+    infobip_default_template_name: str = "test_whatsapp_template_en"
+    infobip_default_language: str = "en"
+
     @field_validator(
         "openai_api_key",
         "google_maps_api_key",
         "supabase_url",
         "supabase_key",
         "supabase_service_role_key",
+        "infobip_api_key",
+        "infobip_whatsapp_from",
         mode="before",
     )
     @classmethod
@@ -100,6 +115,10 @@ class Settings(BaseSettings):
     @property
     def is_supabase_configured(self) -> bool:
         return self.supabase_url is not None and self.supabase_key is not None
+
+    @property
+    def is_infobip_configured(self) -> bool:
+        return self.infobip_api_key is not None
 
 
 @lru_cache

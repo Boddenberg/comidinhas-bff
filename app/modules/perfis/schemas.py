@@ -12,6 +12,7 @@ class PerfilResponse(BaseModel):
     bio: str | None = None
     cidade: str | None = None
     foto_url: str | None = None
+    grupo_individual_id: str | None = None
     criado_em: datetime | None = None
     atualizado_em: datetime | None = None
 
@@ -31,6 +32,11 @@ class PerfilCreateRequest(BaseModel):
             return v.strip() or None
         return v
 
+    @field_validator("email")
+    @classmethod
+    def normalizar_email(cls, v: str | None) -> str | None:
+        return v.lower() if isinstance(v, str) else v
+
 
 class PerfilUpdateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -46,6 +52,11 @@ class PerfilUpdateRequest(BaseModel):
         if isinstance(v, str):
             return v.strip() or None
         return v
+
+    @field_validator("email")
+    @classmethod
+    def normalizar_email(cls, v: str | None) -> str | None:
+        return v.lower() if isinstance(v, str) else v
 
 
 class PerfilListResponse(BaseModel):

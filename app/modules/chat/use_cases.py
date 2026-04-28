@@ -1,5 +1,9 @@
+import logging
+
 from app.integrations.openai.client import OpenAIClient
 from app.modules.chat.schemas import ChatMessage, ChatRequest, ChatResponse
+
+logger = logging.getLogger(__name__)
 
 
 class ChatWithOpenAIUseCase:
@@ -15,6 +19,11 @@ class ChatWithOpenAIUseCase:
         self._default_system_prompt = default_system_prompt
 
     async def execute(self, request: ChatRequest) -> ChatResponse:
+        logger.info(
+            "chat.execute.start history_messages=%s message_len=%s",
+            len(request.history),
+            len(request.message),
+        )
         conversation = [*request.history, ChatMessage(role="user", content=request.message)]
         transcript = self._build_transcript(conversation)
         reply = await self._client.chat(
@@ -22,6 +31,7 @@ class ChatWithOpenAIUseCase:
             system_prompt=request.system_prompt or self._default_system_prompt,
             model=self._default_model,
         )
+        logger.info("chat.execute.end reply_len=%s model=%s", len(reply), self._default_model)
 
         return ChatResponse(reply=reply, model=self._default_model)
 

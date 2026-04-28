@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Mapping, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -14,6 +16,9 @@ from app.core.errors import (
     ExternalServiceError,
     NotFoundError,
 )
+from app.core.logging import sanitize_params
+
+logger = logging.getLogger(__name__)
 
 
 class SupabaseClient:
@@ -787,7 +792,7 @@ class SupabaseClient:
             "GET",
             self._build_url("rest", "perfis"),
             headers=self._headers(),
-            params=[("email", f"eq.{email}"), ("select", "*")],
+            params=[("email", f"ilike.{email.lower()}"), ("select", "*")],
             context="perfis_get_by_email",
         )
         if not isinstance(payload, list):
@@ -863,12 +868,16 @@ class SupabaseClient:
 
     # ------------------------------------------------------------------ grupos
 
-    async def list_grupos(self) -> list[Any]:
+    async def list_grupos(self, *, perfil_id: str | None = None) -> list[Any]:
+        params: list[tuple[str, str]] = [("select", "*"), ("order", "criado_em.desc")]
+        if perfil_id:
+            params.append(("membros", f'cs.[{{"perfil_id":"{perfil_id}"}}]'))
+
         payload = await self._request_json(
             "GET",
             self._build_url("rest", "grupos"),
             headers=self._headers(),
-            params=[("select", "*"), ("order", "criado_em.desc")],
+            params=params,
             context="grupos_list",
         )
         if not isinstance(payload, list):
@@ -1016,6 +1025,69 @@ class SupabaseClient:
             params=[("id", f"eq.{lugar_id}")],
             json=None,
             context="lugares_delete",
+        )
+
+    # ------------------------------------------------------------------ guias
+
+    async def list_guias(self, *, grupo_id: str) -> list[Any]:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "guias"),
+            headers=self._headers(),
+            params=[
+                ("grupo_id", f"eq.{grupo_id}"),
+                ("select", "*"),
+                ("order", "criado_em.desc"),
+            ],
+            context="guias_list",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao listar guias.")
+        return payload
+
+    async def get_guia(self, *, guia_id: str) -> dict[str, Any] | None:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "guias"),
+            headers=self._headers(),
+            params=[("id", f"eq.{guia_id}"), ("select", "*")],
+            context="guias_get",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao buscar guia.")
+        first = payload[0] if payload else None
+        return first if isinstance(first, dict) else None
+
+    async def insert_guia(self, *, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._request_json(
+            "POST",
+            self._build_url("rest", "guias"),
+            headers={**self._headers(), "Prefer": "return=representation"},
+            json=payload,
+            context="guias_insert",
+        )
+        if not isinstance(response, list) or not response or not isinstance(response[0], dict):
+            raise ExternalServiceError("supabase", "Supabase nao retornou o guia apos insercao.")
+        return response[0]
+
+    async def update_guia(self, *, guia_id: str, payload: dict[str, Any]) -> None:
+        await self._request(
+            "PATCH",
+            self._build_url("rest", "guias"),
+            headers=self._headers(),
+            params=[("id", f"eq.{guia_id}")],
+            json=payload,
+            context="guias_update",
+        )
+
+    async def delete_guia(self, *, guia_id: str) -> None:
+        await self._request(
+            "DELETE",
+            self._build_url("rest", "guias"),
+            headers=self._headers(),
+            params=[("id", f"eq.{guia_id}")],
+            json=None,
+            context="guias_delete",
         )
 
     async def upload_lugar_foto(
@@ -1193,6 +1265,16 @@ class SupabaseClient:
         files: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
     ) -> httpx.Response:
+        start = time.perf_counter()
+        parsed_url = urlparse(url)
+        logger.debug(
+            "supabase.request.start context=%s method=%s path=%s params=%s has_files=%s",
+            context,
+            method,
+            parsed_url.path,
+            sanitize_params(params),
+            bool(files),
+        )
         try:
             response = await self._http_client.request(
                 method,
@@ -1205,16 +1287,50 @@ class SupabaseClient:
                 timeout=self._settings.supabase_timeout_seconds,
             )
             response.raise_for_status()
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                "supabase.request.end context=%s method=%s path=%s status=%s duration_ms=%.2f",
+                context,
+                method,
+                parsed_url.path,
+                response.status_code,
+                duration_ms,
+            )
             return response
         except httpx.TimeoutException as exc:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "supabase.request.timeout context=%s method=%s path=%s duration_ms=%.2f",
+                context,
+                method,
+                parsed_url.path,
+                duration_ms,
+            )
             raise ExternalServiceError(
                 "supabase",
                 "Timeout ao chamar o Supabase.",
             ) from exc
         except httpx.HTTPStatusError as exc:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "supabase.request.http_error context=%s method=%s path=%s status=%s duration_ms=%.2f",
+                context,
+                method,
+                parsed_url.path,
+                exc.response.status_code,
+                duration_ms,
+            )
             self._raise_for_supabase_error(exc.response, context=context)
             raise
         except httpx.HTTPError as exc:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "supabase.request.network_error context=%s method=%s path=%s duration_ms=%.2f",
+                context,
+                method,
+                parsed_url.path,
+                duration_ms,
+            )
             raise ExternalServiceError(
                 "supabase",
                 "Erro de rede ao chamar o Supabase.",

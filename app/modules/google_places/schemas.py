@@ -159,3 +159,4 @@ class SaveFromGoogleRequest(BaseModel):
     favorito: bool = False
     notas: str | None = Field(default=None, max_length=2000)
     adicionado_por: str | None = Field(default=None, max_length=80)
+    adicionado_por_perfil_id: str | None = Field(default=None, min_length=8, max_length=64)

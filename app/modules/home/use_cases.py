@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from app.core.errors import BadRequestError
@@ -14,12 +15,15 @@ from app.modules.home.schemas import (
 
 _STATUS_VISITADO = {"fomos", "quero_voltar", "nao_curti"}
 
+logger = logging.getLogger(__name__)
+
 
 class GetHomeSummaryUseCase:
     def __init__(self, client: SupabaseClient) -> None:
         self._client = client
 
     async def get_home(self, *, grupo_id: str | None = None, limite: int = 5) -> HomeResponse:
+        logger.info("home.get_home.start grupo_id=%s limite=%s", grupo_id, limite)
         if not grupo_id:
             raise BadRequestError("Informe o grupo_id.")
 
@@ -43,6 +47,7 @@ class GetHomeSummaryUseCase:
                 nome=str(grupo_raw.get("nome", "")),
                 tipo=str(grupo_raw.get("tipo", "casal")),
                 descricao=grupo_raw.get("descricao"),
+                dono_perfil_id=grupo_raw.get("dono_perfil_id"),
                 membros=grupo_raw.get("membros") or [],
                 criado_em=grupo_raw.get("criado_em"),
                 atualizado_em=grupo_raw.get("atualizado_em"),
@@ -60,7 +65,7 @@ class GetHomeSummaryUseCase:
             filtered = [r for r in rows if predicate(r)] if predicate else rows
             return [_mapear(r) for r in filtered[:limite]]
 
-        return HomeResponse(
+        response = HomeResponse(
             grupo=grupo,
             contadores=contadores,
             favoritos=top(lambda r: r.get("favorito")),
@@ -68,6 +73,14 @@ class GetHomeSummaryUseCase:
             quero_ir=top(lambda r: r.get("status") == "quero_ir"),
             quero_voltar=top(lambda r: r.get("status") == "quero_voltar"),
         )
+        logger.info(
+            "home.get_home.end grupo_id=%s total_lugares=%s favoritos=%s quero_ir=%s",
+            grupo_id,
+            response.contadores.total,
+            len(response.favoritos),
+            len(response.quero_ir),
+        )
+        return response
 
 
 def _mapear(raw: dict[str, Any]) -> LugarResumo:
@@ -82,5 +95,6 @@ def _mapear(raw: dict[str, Any]) -> LugarResumo:
         favorito=bool(raw.get("favorito")),
         imagem_capa=raw.get("imagem_capa"),
         adicionado_por=raw.get("adicionado_por"),
+        adicionado_por_perfil_id=raw.get("adicionado_por_perfil_id"),
         criado_em=raw.get("criado_em"),
     )

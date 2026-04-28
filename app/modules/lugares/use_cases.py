@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +19,8 @@ from app.modules.lugares.schemas import (
     StatusLugar,
 )
 
+logger = logging.getLogger(__name__)
+
 _TIPOS_IMAGEM = {
     "image/jpeg": "jpg",
     "image/png": "png",
@@ -33,6 +36,14 @@ class ManageLugaresUseCase:
         self._client = client
 
     async def listar(self, *, filtros: LugarFiltros) -> LugarListResponse:
+        logger.info(
+            "lugares.listar.start grupo_id=%s pagina=%s tamanho=%s status=%s favorito=%s",
+            filtros.grupo_id,
+            filtros.pagina,
+            filtros.tamanho_pagina,
+            filtros.status.value if filtros.status else None,
+            filtros.favorito,
+        )
         rows, total = await self._client.list_lugares(
             grupo_id=filtros.grupo_id,
             select=self.SELECT,
@@ -44,6 +55,13 @@ class ManageLugaresUseCase:
         )
         items = [self._mapear(r) for r in rows if isinstance(r, dict)]
         tem_mais = (filtros.pagina * filtros.tamanho_pagina) < total
+        logger.info(
+            "lugares.listar.end grupo_id=%s items=%s total=%s tem_mais=%s",
+            filtros.grupo_id,
+            len(items),
+            total,
+            tem_mais,
+        )
         return LugarListResponse(
             items=items,
             pagina=filtros.pagina,
@@ -59,28 +77,58 @@ class ManageLugaresUseCase:
         return self._mapear(raw)
 
     async def criar(self, *, request: LugarCreateRequest) -> LugarResponse:
+        logger.info(
+            "lugares.criar.start grupo_id=%s nome=%s status=%s favorito=%s autor_perfil_id=%s",
+            request.grupo_id,
+            request.nome,
+            request.status.value,
+            request.favorito,
+            request.adicionado_por_perfil_id,
+        )
         payload: dict[str, Any] = request.model_dump(exclude_unset=False)
         if isinstance(payload.get("status"), StatusLugar):
             payload["status"] = payload["status"].value
+        await self._preparar_autor(payload=payload, grupo_id=request.grupo_id)
         criado = await self._client.insert_lugar(payload=payload)
-        return self._mapear(criado)
+        response = self._mapear(criado)
+        logger.info("lugares.criar.end lugar_id=%s grupo_id=%s", response.id, response.grupo_id)
+        return response
 
     async def atualizar(self, *, lugar_id: str, request: LugarUpdateRequest) -> LugarResponse:
+        logger.info("lugares.atualizar.start lugar_id=%s fields=%s", lugar_id, sorted(request.model_fields_set))
         payload = request.model_dump(exclude_unset=True)
         if not payload:
             raise BadRequestError("Informe ao menos um campo para atualizar.")
         if isinstance(payload.get("status"), StatusLugar):
             payload["status"] = payload["status"].value
+
+        if "adicionado_por_perfil_id" in payload and payload["adicionado_por_perfil_id"] is not None:
+            lugar_raw = await self._client.get_lugar(lugar_id=lugar_id, select="id,grupo_id")
+            if lugar_raw is None:
+                raise NotFoundError("Lugar nÃ£o encontrado.")
+            await self._preparar_autor(
+                payload=payload,
+                grupo_id=str(lugar_raw.get("grupo_id", "")),
+            )
+
         await self._client.update_lugar(lugar_id=lugar_id, payload=payload)
-        return await self.buscar(lugar_id=lugar_id)
+        response = await self.buscar(lugar_id=lugar_id)
+        logger.info("lugares.atualizar.end lugar_id=%s", lugar_id)
+        return response
 
     async def remover(self, *, lugar_id: str) -> dict[str, Any]:
-        lugar = await self._client.get_lugar(lugar_id=lugar_id, select="id,fotos")
+        logger.info("lugares.remover.start lugar_id=%s", lugar_id)
+        lugar = await self._client.get_lugar(lugar_id=lugar_id, select="id,grupo_id,fotos")
         if lugar:
             for foto in lugar.get("fotos") or []:
                 if isinstance(foto, dict) and foto.get("caminho"):
                     await self._client.remove_lugar_foto(object_path=foto["caminho"])
+            await self._remover_lugar_dos_guias(
+                grupo_id=str(lugar.get("grupo_id", "")),
+                lugar_id=lugar_id,
+            )
         await self._client.delete_lugar(lugar_id=lugar_id)
+        logger.info("lugares.remover.end lugar_id=%s", lugar_id)
         return {"sucesso": True, "mensagem": "Lugar removido com sucesso."}
 
     # ------------------------------------------------------------------ fotos
@@ -239,6 +287,54 @@ class ManageLugaresUseCase:
                     pass
         return sorted(result, key=lambda f: f.ordem)
 
+    async def _preparar_autor(self, *, payload: dict[str, Any], grupo_id: str) -> None:
+        grupo = await self._client.get_grupo(grupo_id=grupo_id)
+        if grupo is None:
+            raise NotFoundError("Grupo nao encontrado.")
+
+        perfil_id = payload.get("adicionado_por_perfil_id")
+        if perfil_id is None:
+            return
+
+        perfil = await self._client.get_perfil(perfil_id=str(perfil_id))
+        if perfil is None:
+            raise NotFoundError("Perfil nao encontrado.")
+
+        if not self._perfil_esta_no_grupo(grupo=grupo, perfil_id=str(perfil_id)):
+            raise BadRequestError("O perfil informado nao faz parte deste grupo.")
+
+        if not payload.get("adicionado_por"):
+            payload["adicionado_por"] = perfil.get("nome")
+
+    @staticmethod
+    def _perfil_esta_no_grupo(*, grupo: dict[str, Any], perfil_id: str) -> bool:
+        membros = grupo.get("membros")
+        if not isinstance(membros, list):
+            return False
+        return any(
+            isinstance(membro, dict) and str(membro.get("perfil_id")) == perfil_id
+            for membro in membros
+        )
+
+    async def _remover_lugar_dos_guias(self, *, grupo_id: str, lugar_id: str) -> None:
+        if not grupo_id:
+            return
+
+        guias = await self._client.list_guias(grupo_id=grupo_id)
+        for guia in guias:
+            if not isinstance(guia, dict):
+                continue
+            lugar_ids = guia.get("lugar_ids")
+            if not isinstance(lugar_ids, list) or lugar_id not in lugar_ids:
+                continue
+            guia_id = str(guia.get("id", ""))
+            if not guia_id:
+                continue
+            await self._client.update_guia(
+                guia_id=guia_id,
+                payload={"lugar_ids": [item for item in lugar_ids if item != lugar_id]},
+            )
+
     @classmethod
     def _mapear(cls, raw: dict[str, Any]) -> LugarResponse:
         fotos = cls._parse_fotos(raw.get("fotos"))
@@ -257,6 +353,7 @@ class ManageLugaresUseCase:
             imagem_capa=raw.get("imagem_capa"),
             fotos=fotos,
             adicionado_por=raw.get("adicionado_por"),
+            adicionado_por_perfil_id=raw.get("adicionado_por_perfil_id"),
             extra=raw.get("extra") or {},
             criado_em=raw.get("criado_em"),
             atualizado_em=raw.get("atualizado_em"),

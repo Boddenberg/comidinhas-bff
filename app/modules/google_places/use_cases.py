@@ -77,6 +77,7 @@ class SavePlaceFromGoogleUseCase:
             "status": request.status,
             "favorito": request.favorito,
             "adicionado_por": request.adicionado_por,
+            "adicionado_por_perfil_id": request.adicionado_por_perfil_id,
             "extra": {
                 "google_place_id": request.place_id,
                 "formatted_address": details.formatted_address,
@@ -88,6 +89,9 @@ class SavePlaceFromGoogleUseCase:
                 "types": details.types,
             },
         }
+
+        lugares_use_case = ManageLugaresUseCase(self._supabase)
+        await lugares_use_case._preparar_autor(payload=payload, grupo_id=request.grupo_id)
 
         created = await self._supabase.insert_lugar(payload=payload)
         return ManageLugaresUseCase._mapear(created)

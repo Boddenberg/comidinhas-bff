@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Path, Query, UploadFile
 
-from app.api.dependencies import get_manage_perfis_use_case
+from app.api.dependencies import get_manage_grupos_use_case, get_manage_perfis_use_case
+from app.modules.grupos.schemas import GrupoListResponse
+from app.modules.grupos.use_cases import ManageGruposUseCase
 from app.modules.perfis.schemas import (
     PerfilCreateRequest,
     PerfilListResponse,
@@ -35,6 +37,18 @@ async def buscar_por_email(
     use_case: ManagePerfisUseCase = Depends(get_manage_perfis_use_case),
 ) -> PerfilResponse:
     return await use_case.buscar_por_email(email=email)
+
+
+@router.get(
+    "/{perfil_id}/contextos",
+    response_model=GrupoListResponse,
+    summary="Lista os espacos que este perfil pode selecionar",
+)
+async def listar_contextos_do_perfil(
+    perfil_id: str = Path(..., min_length=8, max_length=64),
+    use_case: ManageGruposUseCase = Depends(get_manage_grupos_use_case),
+) -> GrupoListResponse:
+    return await use_case.listar(perfil_id=perfil_id)
 
 
 @router.get("/{perfil_id}", response_model=PerfilResponse, summary="Busca perfil pelo ID")

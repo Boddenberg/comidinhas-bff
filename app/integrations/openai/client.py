@@ -1,9 +1,13 @@
+import logging
+import time
 from typing import Any
 
 import httpx
 
 from app.core.config import Settings
 from app.core.errors import ConfigurationError, ExternalServiceError
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIClient:
@@ -46,6 +50,12 @@ class OpenAIClient:
         )
 
     async def _post_responses(self, payload: dict[str, Any]) -> dict[str, Any]:
+        start = time.perf_counter()
+        logger.info(
+            "openai.responses.start model=%s input_type=%s",
+            payload.get("model"),
+            type(payload.get("input")).__name__,
+        )
         try:
             response = await self._http_client.post(
                 f"{self._settings.openai_base_url}/responses",
@@ -57,19 +67,46 @@ class OpenAIClient:
                 timeout=self._settings.openai_timeout_seconds,
             )
             response.raise_for_status()
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                "openai.responses.end model=%s status=%s duration_ms=%.2f",
+                payload.get("model"),
+                response.status_code,
+                duration_ms,
+            )
             return response.json()
         except httpx.TimeoutException as exc:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "openai.responses.timeout model=%s duration_ms=%.2f",
+                payload.get("model"),
+                duration_ms,
+            )
             raise ExternalServiceError(
                 "openai",
                 "Timeout ao chamar a OpenAI.",
             ) from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "openai.responses.http_error model=%s status=%s duration_ms=%.2f message=%s",
+                payload.get("model"),
+                exc.response.status_code,
+                duration_ms,
+                message,
+            )
             raise ExternalServiceError(
                 "openai",
                 f"Falha ao chamar a OpenAI: {message}",
             ) from exc
         except httpx.HTTPError as exc:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.warning(
+                "openai.responses.network_error model=%s duration_ms=%.2f",
+                payload.get("model"),
+                duration_ms,
+            )
             raise ExternalServiceError(
                 "openai",
                 "Erro de rede ao chamar a OpenAI.",

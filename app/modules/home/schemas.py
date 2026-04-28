@@ -17,6 +17,7 @@ class LugarResumo(BaseModel):
     favorito: bool = False
     imagem_capa: str | None = None
     adicionado_por: str | None = None
+    adicionado_por_perfil_id: str | None = None
     criado_em: datetime | None = None
 
 
@@ -25,6 +26,7 @@ class GrupoResumo(BaseModel):
     nome: str
     tipo: str
     descricao: str | None = None
+    dono_perfil_id: str | None = None
     membros: list[Any] = Field(default_factory=list)
     criado_em: datetime | None = None
     atualizado_em: datetime | None = None

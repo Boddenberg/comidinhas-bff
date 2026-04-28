@@ -48,6 +48,7 @@ class LugarResponse(BaseModel):
     imagem_capa: str | None = None
     fotos: list[FotoSchema] = Field(default_factory=list)
     adicionado_por: str | None = None
+    adicionado_por_perfil_id: str | None = None
     extra: dict = Field(default_factory=dict)
     criado_em: datetime | None = None
     atualizado_em: datetime | None = None
@@ -75,6 +76,7 @@ class LugarCreateRequest(BaseModel):
     status: StatusLugar = StatusLugar.QUERO_IR
     favorito: bool = False
     adicionado_por: str | None = Field(default=None, max_length=80)
+    adicionado_por_perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
 
     @field_validator("link", mode="before")
     @classmethod
@@ -88,7 +90,16 @@ class LugarCreateRequest(BaseModel):
             raise ValueError("Link deve começar com http:// ou https://")
         return v
 
-    @field_validator("nome", "categoria", "bairro", "cidade", "notas", "adicionado_por", mode="before")
+    @field_validator(
+        "nome",
+        "categoria",
+        "bairro",
+        "cidade",
+        "notas",
+        "adicionado_por",
+        "adicionado_por_perfil_id",
+        mode="before",
+    )
     @classmethod
     def vazio_para_none(cls, v: str | None) -> str | None:
         if isinstance(v, str):
@@ -109,6 +120,7 @@ class LugarUpdateRequest(BaseModel):
     status: StatusLugar | None = None
     favorito: bool | None = None
     adicionado_por: str | None = Field(default=None, max_length=80)
+    adicionado_por_perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
 
     @field_validator("link", mode="before")
     @classmethod
@@ -120,6 +132,14 @@ class LugarUpdateRequest(BaseModel):
             return None
         if not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError("Link deve começar com http:// ou https://")
+        return v
+
+
+    @field_validator("adicionado_por", "adicionado_por_perfil_id", mode="before")
+    @classmethod
+    def vazio_para_none(cls, v: str | None) -> str | None:
+        if isinstance(v, str):
+            return v.strip() or None
         return v
 
 

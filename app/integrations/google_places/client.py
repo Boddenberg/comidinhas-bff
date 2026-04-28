@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 from typing import Any
 
 import httpx
@@ -21,6 +23,8 @@ from app.modules.google_places.schemas import (
     QueryPrediction,
     RestaurantLocation,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GooglePlacesClient:
@@ -51,6 +55,13 @@ class GooglePlacesClient:
         request: NearbyRestaurantsRequest,
     ) -> list[NearbyRestaurant]:
         self._ensure_api_key()
+        logger.info(
+            "google_places.search_nearby.start lat=%s lng=%s radius=%s max_results=%s",
+            request.latitude,
+            request.longitude,
+            request.radius_meters,
+            request.max_results,
+        )
 
         payload = self._build_search_payload(request)
         raw_places = await self._search_nearby(payload)
@@ -94,6 +105,11 @@ class GooglePlacesClient:
         request: PlaceAutocompleteRequest,
     ) -> PlaceAutocompleteResponse:
         self._ensure_api_key()
+        logger.info(
+            "google_places.autocomplete.start input_len=%s max_results=%s",
+            len(request.input),
+            request.max_results,
+        )
 
         body: dict[str, Any] = {
             "input": request.input,
@@ -141,6 +157,7 @@ class GooglePlacesClient:
                 if prediction:
                     suggestions.append(prediction)
 
+        logger.info("google_places.autocomplete.end suggestions=%s", len(suggestions))
         return PlaceAutocompleteResponse(suggestions=suggestions)
 
     # ---------------------------------------------------------------- place details
@@ -150,9 +167,15 @@ class GooglePlacesClient:
         place_id: str,
     ) -> PlaceDetailsResponse:
         self._ensure_api_key()
+        logger.info("google_places.details.start place_id=%s", place_id)
         raw = await self._get_json(f"places/{place_id}", field_mask=self.DETAILS_FIELD_MASK)
         details = self._map_place_details(raw, place_id=place_id)
         photos = await self._fetch_place_photos(raw.get("photos"))
+        logger.info(
+            "google_places.details.end place_id=%s photos=%s",
+            place_id,
+            len(photos),
+        )
         return details.model_copy(
             update={
                 "photo_uri": photos[0].photo_uri if photos else None,
@@ -331,6 +354,8 @@ class GooglePlacesClient:
         body: dict[str, Any],
         field_mask: str | None,
     ) -> dict[str, Any]:
+        start = time.perf_counter()
+        logger.debug("google_places.request.start method=POST path=%s", path)
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self._settings.google_maps_api_key or "",
@@ -346,12 +371,27 @@ class GooglePlacesClient:
                 timeout=self._settings.google_places_timeout_seconds,
             )
             response.raise_for_status()
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                "google_places.request.end method=POST path=%s status=%s duration_ms=%.2f",
+                path,
+                response.status_code,
+                duration_ms,
+            )
         except httpx.TimeoutException as exc:
+            logger.warning("google_places.request.timeout method=POST path=%s", path)
             raise ExternalServiceError("google_places", "Timeout ao chamar o Google Places.") from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            logger.warning(
+                "google_places.request.http_error method=POST path=%s status=%s message=%s",
+                path,
+                exc.response.status_code,
+                message,
+            )
             raise ExternalServiceError("google_places", f"Falha ao chamar o Google Places: {message}") from exc
         except httpx.HTTPError as exc:
+            logger.warning("google_places.request.network_error method=POST path=%s", path)
             raise ExternalServiceError("google_places", "Erro de rede ao chamar o Google Places.") from exc
 
         return response.json() or {}
@@ -362,6 +402,8 @@ class GooglePlacesClient:
         *,
         field_mask: str,
     ) -> dict[str, Any]:
+        start = time.perf_counter()
+        logger.debug("google_places.request.start method=GET path=%s", path)
         try:
             response = await self._http_client.get(
                 f"{self._settings.google_places_base_url}/{path}",
@@ -372,12 +414,27 @@ class GooglePlacesClient:
                 timeout=self._settings.google_places_timeout_seconds,
             )
             response.raise_for_status()
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                "google_places.request.end method=GET path=%s status=%s duration_ms=%.2f",
+                path,
+                response.status_code,
+                duration_ms,
+            )
         except httpx.TimeoutException as exc:
+            logger.warning("google_places.request.timeout method=GET path=%s", path)
             raise ExternalServiceError("google_places", "Timeout ao chamar o Google Places.") from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            logger.warning(
+                "google_places.request.http_error method=GET path=%s status=%s message=%s",
+                path,
+                exc.response.status_code,
+                message,
+            )
             raise ExternalServiceError("google_places", f"Falha ao chamar o Google Places: {message}") from exc
         except httpx.HTTPError as exc:
+            logger.warning("google_places.request.network_error method=GET path=%s", path)
             raise ExternalServiceError("google_places", "Erro de rede ao chamar o Google Places.") from exc
 
         return response.json() or {}
@@ -391,6 +448,8 @@ class GooglePlacesClient:
         )
 
     async def _search_nearby(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        start = time.perf_counter()
+        logger.debug("google_places.search_nearby.request.start")
         try:
             response = await self._http_client.post(
                 f"{self._settings.google_places_base_url}/places:searchNearby",
@@ -403,18 +462,31 @@ class GooglePlacesClient:
                 timeout=self._settings.google_places_timeout_seconds,
             )
             response.raise_for_status()
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                "google_places.search_nearby.request.end status=%s duration_ms=%.2f",
+                response.status_code,
+                duration_ms,
+            )
         except httpx.TimeoutException as exc:
+            logger.warning("google_places.search_nearby.request.timeout")
             raise ExternalServiceError(
                 "google_places",
                 "Timeout ao chamar o Google Places.",
             ) from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            logger.warning(
+                "google_places.search_nearby.request.http_error status=%s message=%s",
+                exc.response.status_code,
+                message,
+            )
             raise ExternalServiceError(
                 "google_places",
                 f"Falha ao chamar o Google Places: {message}",
             ) from exc
         except httpx.HTTPError as exc:
+            logger.warning("google_places.search_nearby.request.network_error")
             raise ExternalServiceError(
                 "google_places",
                 "Erro de rede ao chamar o Google Places.",
@@ -423,7 +495,9 @@ class GooglePlacesClient:
         payload = response.json()
         places = payload.get("places", [])
         if isinstance(places, list):
-            return [place for place in places if isinstance(place, dict)]
+            result = [place for place in places if isinstance(place, dict)]
+            logger.info("google_places.search_nearby.end places=%s", len(result))
+            return result
         return []
 
     def _build_search_payload(
