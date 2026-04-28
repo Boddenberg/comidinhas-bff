@@ -34,6 +34,13 @@ class PhotoAttribution(BaseModel):
     photo_uri: str | None = None
 
 
+class GooglePlacePhoto(BaseModel):
+    photo_uri: str
+    width_px: int | None = Field(default=None, ge=1)
+    height_px: int | None = Field(default=None, ge=1)
+    attributions: list[PhotoAttribution] = Field(default_factory=list)
+
+
 class NearbyRestaurant(BaseModel):
     id: str
     display_name: str
@@ -48,6 +55,7 @@ class NearbyRestaurant(BaseModel):
     phone_number: str | None = None
     open_now: bool | None = None
     photo_uri: str | None = None
+    photos: list[GooglePlacePhoto] = Field(default_factory=list)
     photo_attributions: list[PhotoAttribution] = Field(default_factory=list)
     photo_name: str | None = Field(default=None, exclude=True)
 
@@ -136,6 +144,7 @@ class PlaceDetailsResponse(BaseModel):
     phone_number: str | None = None
     open_now: bool | None = None
     photo_uri: str | None = None
+    photos: list[GooglePlacePhoto] = Field(default_factory=list)
     types: list[str] = Field(default_factory=list)
 
 

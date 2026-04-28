@@ -42,27 +42,7 @@ class GetPlaceDetailsUseCase:
         self._client = client
 
     async def execute(self, place_id: str) -> PlaceDetailsResponse:
-        details = await self._client.get_place_details(place_id)
-        photo_uri = await self._client._fetch_photo_uri(
-            await self._extract_first_photo_name(self._client, place_id),
-        )
-        return details.model_copy(update={"photo_uri": photo_uri})
-
-    @staticmethod
-    async def _extract_first_photo_name(
-        client: GooglePlacesClient,
-        place_id: str,
-    ) -> str | None:
-        try:
-            raw = await client.get_place_details_raw(place_id)
-            photos = raw.get("photos")
-            if isinstance(photos, list) and photos:
-                first = photos[0]
-                if isinstance(first, dict):
-                    return client._extract_string(first, "name")
-        except Exception:
-            pass
-        return None
+        return await self._client.get_place_details(place_id)
 
 
 class SavePlaceFromGoogleUseCase:

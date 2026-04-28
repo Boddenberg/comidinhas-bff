@@ -61,6 +61,7 @@ Campos esperados:
 - `GOOGLE_MAPS_API_KEY`
 - `GOOGLE_PLACES_DEFAULT_LANGUAGE_CODE`
 - `GOOGLE_PLACES_DEFAULT_REGION_CODE`
+- `GOOGLE_PLACES_MAX_PHOTOS_PER_PLACE`
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
 - `SUPABASE_PROFILE_BUCKET`
@@ -184,7 +185,7 @@ Depois disso, voce ja pode usar:
 - `POST /api/v1/google-maps/places/autocomplete` — sugestoes em tempo real enquanto o usuario digita
   - Body: `input`, `location_bias`, `included_primary_types`, `session_token`, `max_results`, ...
   - Retorna lista de `PlacePrediction` e/ou `QueryPrediction`
-- `GET /api/v1/google-maps/places/{place_id}` — detalhes completos de um lugar (nome, categoria, bairro, cidade, preco, foto, coordenadas)
+- `GET /api/v1/google-maps/places/{place_id}` — detalhes completos de um lugar (nome, categoria, bairro, cidade, preco, fotos, coordenadas)
 - `POST /api/v1/google-maps/places/save` — busca detalhes no Google e salva direto no banco do grupo
   - Body: `place_id`, `group_id` (opcional, usa grupo ativo), `status`, `is_favorite`, `notes`
   - Retorna o `PlaceResponse` criado no banco

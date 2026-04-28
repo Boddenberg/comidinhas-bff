@@ -527,10 +527,25 @@ Resposta:
   "phone_number": "(11) 3456-7890",
   "open_now": true,
   "photo_uri": "https://lh3.googleusercontent.com/...",
+  "photos": [
+    {
+      "photo_uri": "https://lh3.googleusercontent.com/...",
+      "width_px": 1200,
+      "height_px": 800,
+      "attributions": [
+        {
+          "display_name": "Autor Teste",
+          "uri": "https://maps.google.com/maps/contrib/...",
+          "photo_uri": "https://lh3.googleusercontent.com/..."
+        }
+      ]
+    }
+  ],
   "types": ["japanese_restaurant", "restaurant", "food", "establishment"]
 }
 ```
 
+> `photo_uri` continua sendo a primeira foto para compatibilidade. Para galeria/carrossel, use `photos` (ate 10 imagens por lugar quando o Google retornar). Se houver `attributions`, exiba a atribuicao junto da foto.
 > Exiba esses detalhes numa tela de preview antes do usuario confirmar.
 
 ---

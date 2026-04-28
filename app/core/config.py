@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     google_places_default_region_code: str = "BR"
     google_places_photo_max_width: int = Field(default=600, ge=1, le=4800)
     google_places_photo_max_height: int = Field(default=400, ge=1, le=4800)
+    google_places_max_photos_per_place: int = Field(default=10, ge=1, le=10)
 
     supabase_url: str | None = None
     supabase_key: str | None = None

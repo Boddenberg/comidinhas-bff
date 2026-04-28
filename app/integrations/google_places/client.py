@@ -6,6 +6,7 @@ import httpx
 from app.core.config import Settings
 from app.core.errors import ConfigurationError, ExternalServiceError
 from app.modules.google_places.schemas import (
+    GooglePlacePhoto,
     LocationBias,
     MatchedSubstring,
     NearbyRestaurant,
@@ -55,13 +56,13 @@ class GooglePlacesClient:
         raw_places = await self._search_nearby(payload)
         places = [self._map_place(place) for place in raw_places]
 
-        photo_uris = await asyncio.gather(
-            *(self._fetch_photo_uri(place.photo_name) for place in places)
+        photos_by_place = await asyncio.gather(
+            *(self._fetch_place_photos(place.get("photos")) for place in raw_places)
         )
 
         return [
-            place.model_copy(update={"photo_uri": photo_uri})
-            for place, photo_uri in zip(places, photo_uris, strict=True)
+            self._attach_photos(place, photos)
+            for place, photos in zip(places, photos_by_place, strict=True)
         ]
 
     AUTOCOMPLETE_URL = "places:autocomplete"
@@ -150,7 +151,14 @@ class GooglePlacesClient:
     ) -> PlaceDetailsResponse:
         self._ensure_api_key()
         raw = await self._get_json(f"places/{place_id}", field_mask=self.DETAILS_FIELD_MASK)
-        return self._map_place_details(raw, place_id=place_id)
+        details = self._map_place_details(raw, place_id=place_id)
+        photos = await self._fetch_place_photos(raw.get("photos"))
+        return details.model_copy(
+            update={
+                "photo_uri": photos[0].photo_uri if photos else None,
+                "photos": photos,
+            }
+        )
 
     async def get_place_details_raw(self, place_id: str) -> dict[str, Any]:
         self._ensure_api_key()
@@ -228,7 +236,6 @@ class GooglePlacesClient:
         neighborhood, city = self._extract_address_components(
             raw.get("addressComponents") or [],
         )
-        photo = self._extract_first_photo(raw)
 
         primary_type_name = raw.get("primaryTypeDisplayName")
         if isinstance(primary_type_name, dict):
@@ -253,6 +260,22 @@ class GooglePlacesClient:
             open_now=self._extract_open_now(raw),
             photo_uri=None,
             types=raw.get("types") or [],
+        )
+
+    @staticmethod
+    def _attach_photos(
+        place: NearbyRestaurant,
+        photos: list[GooglePlacePhoto],
+    ) -> NearbyRestaurant:
+        if not photos:
+            return place.model_copy(update={"photos": []})
+
+        return place.model_copy(
+            update={
+                "photo_uri": photos[0].photo_uri,
+                "photo_attributions": photos[0].attributions,
+                "photos": photos,
+            }
         )
 
     @staticmethod
@@ -463,14 +486,17 @@ class GooglePlacesClient:
 
     @staticmethod
     def _extract_first_photo(payload: dict[str, Any]) -> dict[str, Any] | None:
-        photos = payload.get("photos")
-        if not isinstance(photos, list) or not photos:
+        photos = GooglePlacesClient._extract_photos(payload.get("photos"))
+        if not photos:
             return None
 
-        first_photo = photos[0]
-        if isinstance(first_photo, dict):
-            return first_photo
-        return None
+        return photos[0]
+
+    @staticmethod
+    def _extract_photos(raw: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw, list):
+            return []
+        return [photo for photo in raw if isinstance(photo, dict)]
 
     @staticmethod
     def _extract_photo_attributions(
@@ -574,6 +600,31 @@ class GooglePlacesClient:
         if isinstance(photo_uri, str) and photo_uri.strip():
             return photo_uri
         return None
+
+    async def _fetch_place_photos(self, raw_photos: Any) -> list[GooglePlacePhoto]:
+        photos = self._extract_photos(raw_photos)[
+            : self._settings.google_places_max_photos_per_place
+        ]
+        if not photos:
+            return []
+
+        photo_uris = await asyncio.gather(
+            *(
+                self._fetch_photo_uri(self._extract_string(photo, "name"))
+                for photo in photos
+            )
+        )
+
+        return [
+            GooglePlacePhoto(
+                photo_uri=photo_uri,
+                width_px=self._extract_int(photo, "widthPx"),
+                height_px=self._extract_int(photo, "heightPx"),
+                attributions=self._extract_photo_attributions(photo),
+            )
+            for photo, photo_uri in zip(photos, photo_uris, strict=True)
+            if photo_uri is not None
+        ]
 
     @staticmethod
     def _extract_error_message(response: httpx.Response) -> str:
