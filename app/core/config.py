@@ -75,6 +75,13 @@ class Settings(BaseSettings):
         le=20_971_520,
     )
     supabase_place_photos_max_per_place: int = Field(default=10, ge=1, le=30)
+    supabase_lugar_fotos_bucket: str = "place-photos"
+    supabase_lugar_foto_max_bytes: int = Field(
+        default=5_242_880,
+        ge=1,
+        le=20_971_520,
+    )
+    supabase_lugar_fotos_max_por_lugar: int = Field(default=10, ge=1, le=30)
 
     infobip_api_key: str | None = None
     infobip_base_url: str = "https://55e4jx.api.infobip.com"

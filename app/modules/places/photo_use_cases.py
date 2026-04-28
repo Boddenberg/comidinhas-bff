@@ -22,13 +22,22 @@ class ManagePlacePhotosUseCase:
     def __init__(self, client: SupabaseClient) -> None:
         self._client = client
 
-    async def list_photos(self, *, place_id: str) -> list[PlacePhotoResponse]:
-        rows = await self._client.list_place_photos(place_id=place_id)
+    async def list_photos(
+        self,
+        *,
+        access_token: str | None = None,
+        place_id: str,
+    ) -> list[PlacePhotoResponse]:
+        rows = await self._client.list_place_photos(
+            access_token=access_token,
+            place_id=place_id,
+        )
         return [self._map_photo(row) for row in rows if isinstance(row, dict)]
 
     async def upload_photo(
         self,
         *,
+        access_token: str | None = None,
         place_id: str,
         file: UploadFile,
         set_as_cover: bool = False,
@@ -49,17 +58,24 @@ class ManagePlacePhotosUseCase:
                 f"A foto excede o limite de {self._client.max_place_photo_bytes} bytes.",
             )
 
-        count = await self._client.count_place_photos(place_id=place_id)
+        count = await self._client.count_place_photos(
+            access_token=access_token,
+            place_id=place_id,
+        )
         if count >= self._client.place_photos_max_per_place:
             raise BadRequestError(
                 f"Limite de {self._client.place_photos_max_per_place} fotos por lugar atingido.",
             )
 
-        place_data = await self._require_place(place_id=place_id)
+        place_data = await self._require_place(
+            access_token=access_token,
+            place_id=place_id,
+        )
         group_id = str(place_data.get("group_id", ""))
 
         object_path = f"{group_id}/{place_id}/{uuid4().hex}.{extension}"
         upload = await self._client.upload_place_photo(
+            access_token=access_token,
             object_path=object_path,
             content=content,
             filename=file.filename or f"photo.{extension}",
@@ -70,9 +86,13 @@ class ManagePlacePhotosUseCase:
         is_cover = set_as_cover or is_first
 
         if is_cover:
-            await self._client.clear_place_cover_photos(place_id=place_id)
+            await self._client.clear_place_cover_photos(
+                access_token=access_token,
+                place_id=place_id,
+            )
 
         row = await self._client.insert_place_photo(
+            access_token=access_token,
             payload={
                 "place_id": place_id,
                 "group_id": group_id,
@@ -85,14 +105,24 @@ class ManagePlacePhotosUseCase:
 
         if is_cover:
             await self._client.update_place(
+                access_token=access_token,
                 place_id=place_id,
                 payload={"image_url": upload["public_url"]},
             )
 
         return self._map_photo(row)
 
-    async def set_cover(self, *, place_id: str, photo_id: str) -> PlacePhotoResponse:
-        photos = await self._client.list_place_photos(place_id=place_id)
+    async def set_cover(
+        self,
+        *,
+        access_token: str | None = None,
+        place_id: str,
+        photo_id: str,
+    ) -> PlacePhotoResponse:
+        photos = await self._client.list_place_photos(
+            access_token=access_token,
+            place_id=place_id,
+        )
         target = next(
             (p for p in photos if isinstance(p, dict) and str(p.get("id")) == photo_id),
             None,
@@ -101,21 +131,35 @@ class ManagePlacePhotosUseCase:
             raise NotFoundError("Foto nao encontrada neste lugar.")
 
         await asyncio.gather(
-            self._client.clear_place_cover_photos(place_id=place_id),
+            self._client.clear_place_cover_photos(
+                access_token=access_token,
+                place_id=place_id,
+            ),
             self._client.update_place(
+                access_token=access_token,
                 place_id=place_id,
                 payload={"image_url": target["public_url"]},
             ),
         )
         await self._client.update_place_photo(
+            access_token=access_token,
             photo_id=photo_id,
             payload={"is_cover": True},
         )
         target["is_cover"] = True
         return self._map_photo(target)
 
-    async def delete_photo(self, *, place_id: str, photo_id: str) -> dict[str, Any]:
-        photos = await self._client.list_place_photos(place_id=place_id)
+    async def delete_photo(
+        self,
+        *,
+        access_token: str | None = None,
+        place_id: str,
+        photo_id: str,
+    ) -> dict[str, Any]:
+        photos = await self._client.list_place_photos(
+            access_token=access_token,
+            place_id=place_id,
+        )
         target = next(
             (p for p in photos if isinstance(p, dict) and str(p.get("id")) == photo_id),
             None,
@@ -126,10 +170,16 @@ class ManagePlacePhotosUseCase:
         was_cover = bool(target.get("is_cover"))
         storage_path = target.get("storage_path", "")
 
-        await self._client.delete_place_photo_record(photo_id=photo_id)
+        await self._client.delete_place_photo_record(
+            access_token=access_token,
+            photo_id=photo_id,
+        )
 
         if storage_path:
-            await self._client.remove_place_photo_from_storage(object_path=storage_path)
+            await self._client.remove_place_photo_from_storage(
+                access_token=access_token,
+                object_path=storage_path,
+            )
 
         if was_cover:
             remaining = [p for p in photos if isinstance(p, dict) and str(p.get("id")) != photo_id]
@@ -137,16 +187,19 @@ class ManagePlacePhotosUseCase:
                 new_cover = remaining[0]
                 await asyncio.gather(
                     self._client.update_place_photo(
+                        access_token=access_token,
                         photo_id=str(new_cover["id"]),
                         payload={"is_cover": True},
                     ),
                     self._client.update_place(
+                        access_token=access_token,
                         place_id=place_id,
                         payload={"image_url": new_cover["public_url"]},
                     ),
                 )
             else:
                 await self._client.update_place(
+                    access_token=access_token,
                     place_id=place_id,
                     payload={"image_url": None},
                 )
@@ -156,10 +209,14 @@ class ManagePlacePhotosUseCase:
     async def reorder_photos(
         self,
         *,
+        access_token: str | None = None,
         place_id: str,
         request: ReorderPhotosRequest,
     ) -> list[PlacePhotoResponse]:
-        photos = await self._client.list_place_photos(place_id=place_id)
+        photos = await self._client.list_place_photos(
+            access_token=access_token,
+            place_id=place_id,
+        )
         existing_ids = {str(p["id"]) for p in photos if isinstance(p, dict)}
 
         for photo_id in request.photo_ids:
@@ -169,6 +226,7 @@ class ManagePlacePhotosUseCase:
         await asyncio.gather(
             *(
                 self._client.update_place_photo(
+                    access_token=access_token,
                     photo_id=photo_id,
                     payload={"sort_order": idx},
                 )
@@ -176,10 +234,19 @@ class ManagePlacePhotosUseCase:
             )
         )
 
-        return await self.list_photos(place_id=place_id)
+        return await self.list_photos(
+            access_token=access_token,
+            place_id=place_id,
+        )
 
-    async def _require_place(self, *, place_id: str) -> dict[str, Any]:
+    async def _require_place(
+        self,
+        *,
+        access_token: str | None = None,
+        place_id: str,
+    ) -> dict[str, Any]:
         place = await self._client.get_place(
+            access_token=access_token,
             place_id=place_id,
             select="id,group_id,image_url",
         )
