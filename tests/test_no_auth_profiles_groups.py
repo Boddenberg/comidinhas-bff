@@ -1,0 +1,169 @@
+from fastapi.testclient import TestClient
+
+import pytest
+
+from app.api.dependencies import get_manage_grupos_use_case
+from app.main import app
+from app.modules.grupos.schemas import (
+    GrupoCreateRequest,
+    GrupoListResponse,
+    GrupoResponse,
+    MembroSchema,
+    TipoGrupo,
+)
+from app.modules.grupos.use_cases import ManageGruposUseCase
+from app.modules.perfis.schemas import PerfilCreateRequest
+from app.modules.perfis.use_cases import ManagePerfisUseCase
+
+
+class FakePerfisClient:
+    def __init__(self) -> None:
+        self.inserted_group: dict | None = None
+        self.updated_profile: dict | None = None
+
+    async def insert_perfil(self, *, payload):  # type: ignore[no-untyped-def]
+        return {"id": "perfil-1", **payload}
+
+    async def insert_grupo(self, *, payload):  # type: ignore[no-untyped-def]
+        self.inserted_group = payload
+        return {"id": "grupo-individual-1", **payload}
+
+    async def update_perfil(self, *, perfil_id, payload):  # type: ignore[no-untyped-def]
+        self.updated_profile = {"perfil_id": perfil_id, "payload": payload}
+
+
+@pytest.mark.anyio
+async def test_criar_perfil_tambem_cria_espaco_individual() -> None:
+    fake_client = FakePerfisClient()
+    use_case = ManagePerfisUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.criar(
+        request=PerfilCreateRequest(nome="Filipe", email="FILIPE@example.com")
+    )
+
+    assert response.grupo_individual_id == "grupo-individual-1"
+    assert response.email == "filipe@example.com"
+    assert fake_client.inserted_group == {
+        "nome": "Filipe",
+        "tipo": "individual",
+        "descricao": None,
+        "dono_perfil_id": "perfil-1",
+        "membros": [
+            {
+                "perfil_id": "perfil-1",
+                "nome": "Filipe",
+                "email": "filipe@example.com",
+                "papel": "dono",
+            }
+        ],
+    }
+    assert fake_client.updated_profile == {
+        "perfil_id": "perfil-1",
+        "payload": {"grupo_individual_id": "grupo-individual-1"},
+    }
+
+
+class FakeGruposClient:
+    def __init__(self) -> None:
+        self.inserted_group: dict | None = None
+        self.profiles = {
+            "perfil-filipe": {
+                "id": "perfil-filipe",
+                "nome": "Filipe",
+                "email": "filipe@example.com",
+            },
+            "perfil-victor": {
+                "id": "perfil-victor",
+                "nome": "Victor",
+                "email": "victor@example.com",
+            },
+        }
+
+    async def list_grupos(self, *, perfil_id=None):  # type: ignore[no-untyped-def]
+        return []
+
+    async def get_perfil(self, *, perfil_id):  # type: ignore[no-untyped-def]
+        return self.profiles.get(perfil_id)
+
+    async def get_perfil_por_email(self, *, email):  # type: ignore[no-untyped-def]
+        return next(
+            (p for p in self.profiles.values() if p["email"] == email),
+            None,
+        )
+
+    async def insert_grupo(self, *, payload):  # type: ignore[no-untyped-def]
+        self.inserted_group = payload
+        return {"id": "grupo-casal-1", **payload}
+
+
+@pytest.mark.anyio
+async def test_criar_casal_resolve_membros_por_perfil_ou_email() -> None:
+    fake_client = FakeGruposClient()
+    use_case = ManageGruposUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.criar(
+        request=GrupoCreateRequest(
+            nome="Filipe e Victor",
+            tipo=TipoGrupo.CASAL,
+            membros=[
+                MembroSchema(perfil_id="perfil-filipe"),
+                MembroSchema(email="victor@example.com"),
+            ],
+        )
+    )
+
+    assert response.id == "grupo-casal-1"
+    assert response.tipo == TipoGrupo.CASAL
+    assert fake_client.inserted_group is not None
+    assert fake_client.inserted_group["dono_perfil_id"] == "perfil-filipe"
+    assert fake_client.inserted_group["membros"] == [
+        {
+            "perfil_id": "perfil-filipe",
+            "nome": "Filipe",
+            "email": "filipe@example.com",
+            "papel": "dono",
+        },
+        {
+            "perfil_id": "perfil-victor",
+            "nome": "Victor",
+            "email": "victor@example.com",
+            "papel": "membro",
+        },
+    ]
+
+
+class FakeContextosUseCase:
+    async def listar(self, *, perfil_id: str | None = None):  # type: ignore[no-untyped-def]
+        assert perfil_id == "perfil-1"
+        return GrupoListResponse(
+            items=[
+                GrupoResponse(
+                    id="grupo-individual-1",
+                    nome="Filipe",
+                    tipo=TipoGrupo.INDIVIDUAL,
+                    dono_perfil_id="perfil-1",
+                    membros=[
+                        MembroSchema(
+                            perfil_id="perfil-1",
+                            nome="Filipe",
+                            email="filipe@example.com",
+                            papel="dono",
+                        )
+                    ],
+                )
+            ],
+            total=1,
+        )
+
+
+def test_contextos_do_perfil_nao_exige_bearer_token() -> None:
+    app.dependency_overrides[get_manage_grupos_use_case] = lambda: FakeContextosUseCase()
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/perfis/perfil-1/contextos")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["tipo"] == "individual"
+    assert response.json()["items"][0]["membros"][0]["perfil_id"] == "perfil-1"

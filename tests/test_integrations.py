@@ -1,10 +1,14 @@
+import json
+
 import httpx
 import pytest
 
 from app.core.config import Settings
 from app.integrations.google_places.client import GooglePlacesClient
+from app.integrations.infobip.client import InfobipClient
 from app.integrations.openai.client import OpenAIClient
 from app.modules.google_places.schemas import NearbyRestaurantsRequest
+from app.modules.infobip.schemas import SendWhatsAppTemplateRequest
 
 
 @pytest.mark.anyio
@@ -176,3 +180,71 @@ async def test_google_places_client_maps_place_details_photos() -> None:
         "https://images.example.com/place-1.jpg",
         "https://images.example.com/place-1-2.jpg",
     ]
+
+
+@pytest.mark.anyio
+async def test_infobip_client_sends_whatsapp_template() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/whatsapp/1/message/template"
+        assert request.headers["Authorization"] == "App test-key"
+        assert request.headers["Content-Type"] == "application/json"
+
+        payload = json.loads(request.content.decode())
+        assert payload == {
+            "messages": [
+                {
+                    "from": "447860088970",
+                    "to": "5511999999999",
+                    "messageId": "message-1",
+                    "content": {
+                        "templateName": "test_whatsapp_template_en",
+                        "templateData": {
+                            "body": {
+                                "placeholders": ["Boddenberg"],
+                            }
+                        },
+                        "language": "en",
+                    },
+                }
+            ]
+        }
+
+        return httpx.Response(
+            status_code=200,
+            json={
+                "messages": [
+                    {
+                        "to": "5511999999999",
+                        "messageId": "message-1",
+                        "status": {"id": 1, "name": "PENDING"},
+                    }
+                ]
+            },
+        )
+
+    settings = Settings(
+        infobip_api_key="test-key",
+        infobip_base_url="https://55e4jx.api.infobip.com",
+        infobip_whatsapp_from="447860088970",
+    )
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(
+        base_url="https://55e4jx.api.infobip.com",
+        transport=transport,
+    ) as client:
+        infobip_client = InfobipClient(
+            http_client=client,
+            settings=settings,
+        )
+        response = await infobip_client.send_whatsapp_template(
+            SendWhatsAppTemplateRequest(
+                to="5511999999999",
+                placeholders=["Boddenberg"],
+                message_id="message-1",
+            )
+        )
+
+    assert response.message_id == "message-1"
+    assert response.provider == "infobip"
+    assert response.infobip_response["messages"][0]["status"]["name"] == "PENDING"
