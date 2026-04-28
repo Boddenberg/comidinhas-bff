@@ -2,6 +2,549 @@
 
 Base URL de todos os exemplos: `http://localhost:8000/api/v1`
 
+> Fluxos novos em portugues (`/perfis`, `/grupos`, `/lugares`, `/guias`, `/ia`) estao sem bearer token.
+> Os blocos antigos em ingles (`/profiles`, `/groups`, `/places`) ainda descrevem o fluxo legado autenticado.
+
+---
+
+## 0. Fluxo Atual No-Auth
+
+Esta e a integracao que o front novo deve seguir. Nao envie `Authorization` nestes endpoints.
+
+### 0.1 Conceitos
+
+| Conceito | Campo | Como usar no front |
+|---|---|---|
+| Perfil | `perfil_id` | Pessoa individual cadastrada no app |
+| Contexto | `grupo_id` | Espaco selecionado: individual, casal ou grupo |
+| Lugar | `lugar_id` | Restaurante/bar/cafe dentro de um contexto |
+| Guia | `guia_id` | Colecao customizada de lugares dentro de um contexto |
+
+Regra principal: toda tela de restaurantes, guias, home e IA depende do `grupo_id` selecionado.
+
+### 0.2 Bootstrap do App
+
+Fluxo recomendado ao abrir o app:
+
+```text
+1. Se nao houver perfil selecionado no storage local:
+   - Mostrar tela de cadastro ou selecao de perfil.
+2. Com `perfil_id`:
+   - GET /perfis/{perfil_id}
+   - GET /perfis/{perfil_id}/contextos
+3. Mostrar seletor de contexto:
+   - Perfil individual
+   - Casal
+   - Outros grupos
+4. Salvar `perfil_id` e `grupo_id` selecionados no estado global do front.
+5. Carregar:
+   - GET /home/?grupo_id=...
+   - GET /lugares/?grupo_id=...
+   - GET /guias/?grupo_id=...
+```
+
+### 0.3 Cadastro de Perfis
+
+```http
+POST /perfis/
+Content-Type: application/json
+```
+
+```json
+{
+  "nome": "Filipe",
+  "email": "filipe@email.com",
+  "bio": "Gosto de restaurantes arabes e sushi",
+  "cidade": "Sao Paulo"
+}
+```
+
+Resposta importante:
+
+```json
+{
+  "id": "perfil-filipe",
+  "nome": "Filipe",
+  "email": "filipe@email.com",
+  "grupo_individual_id": "grupo-individual-filipe"
+}
+```
+
+Ao cadastrar uma pessoa, o backend cria automaticamente o contexto individual dela. Guarde:
+
+- `perfil.id` como `perfil_id`
+- `perfil.grupo_individual_id` como uma opcao de contexto
+
+Buscar perfil:
+
+```http
+GET /perfis/{perfil_id}
+GET /perfis/por-email?email=filipe@email.com
+```
+
+Listar todos:
+
+```http
+GET /perfis/
+```
+
+### 0.4 Contextos: Individual, Casal e Grupo
+
+Listar os contextos de um perfil:
+
+```http
+GET /perfis/{perfil_id}/contextos
+```
+
+ou:
+
+```http
+GET /grupos/?perfil_id={perfil_id}
+```
+
+Criar um casal:
+
+```http
+POST /grupos/
+Content-Type: application/json
+```
+
+```json
+{
+  "nome": "Filipe e Victor",
+  "tipo": "casal",
+  "descricao": "Nosso guia de restaurantes",
+  "membros": [
+    { "perfil_id": "perfil-filipe" },
+    { "perfil_id": "perfil-victor" }
+  ]
+}
+```
+
+Tambem da para adicionar membro por email ja cadastrado:
+
+```json
+{
+  "nome": "Filipe e Victor",
+  "tipo": "casal",
+  "membros": [
+    { "email": "filipe@email.com" },
+    { "email": "victor@email.com" }
+  ]
+}
+```
+
+Resposta:
+
+```json
+{
+  "id": "grupo-casal",
+  "nome": "Filipe e Victor",
+  "tipo": "casal",
+  "dono_perfil_id": "perfil-filipe",
+  "membros": [
+    { "perfil_id": "perfil-filipe", "nome": "Filipe", "papel": "dono" },
+    { "perfil_id": "perfil-victor", "nome": "Victor", "papel": "membro" }
+  ]
+}
+```
+
+Adicionar membro depois:
+
+```http
+POST /grupos/{grupo_id}/membros
+```
+
+```json
+{ "perfil_id": "perfil-victor" }
+```
+
+Remover membro:
+
+```http
+DELETE /grupos/{grupo_id}/membros/{perfil_id}
+```
+
+### 0.5 Lugares
+
+Listar restaurantes do contexto selecionado:
+
+```http
+GET /lugares/?grupo_id={grupo_id}&pagina=1&tamanho_pagina=20
+```
+
+Filtros disponiveis:
+
+| Param | Tipo | Exemplo |
+|---|---|---|
+| `busca` | string | `sushi` |
+| `categoria` | string | `arabe` |
+| `bairro` | string | `pinheiros` |
+| `status` | enum | `quero_ir`, `fomos`, `quero_voltar`, `nao_curti` |
+| `favorito` | bool | `true` |
+| `faixa_preco` | int | `1` a `4` |
+| `faixa_preco_min` | int | `2` |
+| `faixa_preco_max` | int | `3` |
+| `ordenar_por` | enum | `criado_em`, `atualizado_em`, `nome` |
+| `direcao` | enum | `asc`, `desc` |
+
+Criar lugar manual:
+
+```http
+POST /lugares/
+```
+
+```json
+{
+  "grupo_id": "grupo-casal",
+  "nome": "Casa Arabe",
+  "categoria": "Arabe",
+  "bairro": "Pinheiros",
+  "cidade": "Sao Paulo",
+  "faixa_preco": 2,
+  "link": "https://maps.google.com/...",
+  "notas": "Pedir esfihas e coalhada",
+  "status": "quero_ir",
+  "favorito": false,
+  "adicionado_por_perfil_id": "perfil-filipe"
+}
+```
+
+O campo `adicionado_por_perfil_id` deve ser um membro do contexto. O backend preenche `adicionado_por` com o nome desse perfil.
+
+Editar lugar:
+
+```http
+PATCH /lugares/{lugar_id}
+```
+
+```json
+{
+  "status": "fomos",
+  "favorito": true,
+  "notas": "Fomos no sabado e vale voltar."
+}
+```
+
+Fotos:
+
+```http
+POST /lugares/{lugar_id}/fotos?definir_como_capa=true
+Content-Type: multipart/form-data
+
+file=<foto.jpg>
+```
+
+```http
+PATCH /lugares/{lugar_id}/fotos/{foto_id}/capa
+PATCH /lugares/{lugar_id}/fotos/reordenar
+DELETE /lugares/{lugar_id}/fotos/{foto_id}
+```
+
+### 0.6 Google Places: Buscar e Salvar
+
+Autocomplete:
+
+```http
+POST /google-maps/places/autocomplete
+```
+
+```json
+{
+  "input": "Casa Arabe Pinheiros",
+  "included_primary_types": ["restaurant", "food", "cafe", "bar"],
+  "included_region_codes": ["br"],
+  "max_results": 5
+}
+```
+
+Detalhes:
+
+```http
+GET /google-maps/places/{google_place_id}
+```
+
+Salvar no banco:
+
+```http
+POST /google-maps/places/save
+```
+
+```json
+{
+  "place_id": "ChIJ...",
+  "grupo_id": "grupo-casal",
+  "status": "quero_ir",
+  "favorito": false,
+  "notas": "Achamos pelo Google",
+  "adicionado_por_perfil_id": "perfil-victor"
+}
+```
+
+### 0.7 Guias Customizados
+
+Listar guias do contexto:
+
+```http
+GET /guias/?grupo_id={grupo_id}
+```
+
+Criar guia:
+
+```http
+POST /guias/
+```
+
+```json
+{
+  "grupo_id": "grupo-casal",
+  "nome": "Guia Arabe",
+  "descricao": "Restaurantes arabes que queremos testar",
+  "lugar_ids": ["lugar-1", "lugar-2"]
+}
+```
+
+Adicionar lugar:
+
+```http
+POST /guias/{guia_id}/lugares
+```
+
+```json
+{ "lugar_id": "lugar-3" }
+```
+
+Reordenar:
+
+```http
+PATCH /guias/{guia_id}/lugares/reordenar
+```
+
+```json
+{ "lugar_ids": ["lugar-3", "lugar-1", "lugar-2"] }
+```
+
+Remover lugar do guia:
+
+```http
+DELETE /guias/{guia_id}/lugares/{lugar_id}
+```
+
+Remover guia:
+
+```http
+DELETE /guias/{guia_id}
+```
+
+### 0.8 Home
+
+```http
+GET /home/?grupo_id={grupo_id}&limite=5
+```
+
+Use para montar cards de resumo:
+
+- total de lugares
+- visitados
+- favoritos
+- quero ir
+- quero voltar
+- listas de favoritos/recentes/filas
+
+### 0.9 Logs e Debug
+
+Toda resposta do backend inclui:
+
+```http
+X-Request-ID: <id>
+```
+
+Quando der erro no front, mostre ou copie esse `X-Request-ID` no console/bug report. Ele aparece em todos os logs do backend e facilita rastrear a request.
+
+Variaveis do backend:
+
+```env
+LOG_LEVEL=INFO
+LOG_REQUEST_BODY=false
+LOG_BODY_MAX_CHARS=2000
+```
+
+Mantenha `LOG_REQUEST_BODY=false` em producao.
+
+---
+
+## 0.10 IA Decide Restaurante (no-auth)
+
+Use este endpoint para o botao "Deixe a IA decidir" e suas variacoes.
+
+```http
+POST /ia/decidir-restaurante
+Content-Type: application/json
+```
+
+### Escopos para os botoes
+
+| Botao no front | `escopo` | O que entra na decisao |
+|---|---|---|
+| IA decide qualquer coisa | `todos` | Todos os restaurantes do `grupo_id` |
+| IA decide entre favoritos | `favoritos` | Apenas restaurantes com `favorito=true` |
+| IA decide novas experiencias | `quero_ir` | Apenas restaurantes com `status="quero_ir"` |
+| IA decide neste guia | `guia` | Apenas restaurantes do `guia_id` |
+
+### Payload recomendado
+
+```json
+{
+  "grupo_id": "uuid-do-contexto-selecionado",
+  "escopo": "quero_ir",
+  "criterios": {
+    "dia_semana": "sexta-feira",
+    "clima": "chuvoso",
+    "mood": "queremos algo diferente, mas sem ser pesado",
+    "ocasiao": "date night casual",
+    "orcamento_max": 3,
+    "orcamento_texto": "ate uns R$ 120 por pessoa",
+    "quantidade_pessoas": 2,
+    "preferencias": ["arabe", "comida confortavel"],
+    "restricoes": ["evitar frutos do mar"],
+    "observacoes": "preferir lugares que ainda nao fomos",
+    "priorizar_novidade": true,
+    "surpreender": true
+  },
+  "evitar_lugar_ids": ["uuid-recem-escolhido"],
+  "max_candidatos": 80
+}
+```
+
+Campos obrigatorios:
+- `grupo_id`
+- `escopo`
+
+Campos condicionais:
+- `guia_id` e obrigatorio quando `escopo="guia"`.
+
+Campos opcionais importantes:
+- `orcamento_max`: `1`, `2`, `3` ou `4`, igual a faixa de preco dos lugares.
+- `mood`: texto livre. E o campo mais util para a IA entender o momento.
+- `clima` e `dia_semana`: o front pode preencher manualmente ou via alguma API propria depois.
+- `evitar_lugar_ids`: bom para nao repetir uma escolha recente se o usuario pedir "decide de novo".
+- `max_candidatos`: limite de restaurantes enviados para a IA. Maximo atual: `100`.
+
+### Exemplo: favoritos
+
+```json
+{
+  "grupo_id": "uuid-do-casal",
+  "escopo": "favoritos",
+  "criterios": {
+    "mood": "queremos algo garantido, sem arriscar",
+    "orcamento_max": 2
+  }
+}
+```
+
+### Exemplo: quero ir
+
+```json
+{
+  "grupo_id": "uuid-do-casal",
+  "escopo": "quero_ir",
+  "criterios": {
+    "mood": "novas experiencias",
+    "dia_semana": "sabado",
+    "surpreender": true
+  }
+}
+```
+
+### Exemplo: dentro de um guia
+
+```json
+{
+  "grupo_id": "uuid-do-casal",
+  "escopo": "guia",
+  "guia_id": "uuid-guia-arabe",
+  "criterios": {
+    "mood": "restaurante arabe para jantar leve",
+    "orcamento_max": 3
+  }
+}
+```
+
+### Resposta
+
+```json
+{
+  "grupo_id": "uuid-do-casal",
+  "escopo": "quero_ir",
+  "guia_id": null,
+  "escolha": {
+    "lugar": {
+      "id": "uuid-lugar",
+      "grupo_id": "uuid-do-casal",
+      "nome": "Casa Arabe",
+      "categoria": "Arabe",
+      "bairro": "Pinheiros",
+      "cidade": "Sao Paulo",
+      "faixa_preco": 2,
+      "status": "quero_ir",
+      "favorito": false,
+      "imagem_capa": "...",
+      "fotos": [],
+      "notas": "..."
+    },
+    "motivo": "Escolhi este porque combina com o mood e respeita o orcamento.",
+    "pontos_fortes": ["Dentro do orcamento", "Boa opcao para experimentar algo novo"],
+    "ressalvas": ["Pode ser melhor reservar"],
+    "confianca": 0.86
+  },
+  "alternativas": [
+    {
+      "lugar": { "id": "uuid-outra-opcao", "nome": "..." },
+      "motivo": "Boa segunda opcao.",
+      "pontos_fortes": [],
+      "ressalvas": [],
+      "confianca": 0.74
+    }
+  ],
+  "total_candidatos": 12,
+  "criterios_usados": {
+    "mood": "novas experiencias",
+    "orcamento_max": 3
+  },
+  "modelo": "gpt-4o-mini",
+  "provider": "openai"
+}
+```
+
+### Comportamento de erro para UI
+
+| Status | Quando acontece | Sugestao de mensagem |
+|---|---|---|
+| `400` | Nao ha candidatos no escopo, `guia_id` faltando, guia de outro grupo | "Nao encontrei opcoes suficientes para esse filtro." |
+| `404` | `grupo_id` ou `guia_id` nao existe | "Esse contexto ou guia nao foi encontrado." |
+| `500/502` | Falha na OpenAI ou resposta invalida | "A IA nao conseguiu decidir agora. Tenta de novo em instantes." |
+
+### Implementacao sugerida no front
+
+1. Use o `grupo_id` do contexto selecionado.
+2. Renderize um menu no botao "Deixe a IA decidir":
+   - "Qualquer restaurante" -> `escopo="todos"`
+   - "So favoritos" -> `escopo="favoritos"`
+   - "Novas experiencias" -> `escopo="quero_ir"`
+   - "Dentro de um guia" -> abre seletor de guia e usa `escopo="guia"`
+3. Antes de chamar, abra um bottom sheet/modal opcional com:
+   - mood
+   - orcamento maximo
+   - clima
+   - dia da semana
+   - restricoes/preferencias
+4. Mostre loading com texto curto: "A IA esta escolhendo..."
+5. Exiba a resposta com card do restaurante escolhido, motivo e alternativas.
+6. Tenha um botao "decidir de novo" reaproveitando o mesmo payload e preenchendo `evitar_lugar_ids` com o lugar recusado.
+
+---
+
 Todo endpoint autenticado exige o header:
 ```
 Authorization: Bearer <access_token>

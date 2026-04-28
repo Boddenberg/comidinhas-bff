@@ -9,7 +9,8 @@ Scaffold inicial de um BFF/BFA em Python usando FastAPI.
 - endpoint `GET /api/v1/hello-world`
 - endpoint `POST /api/v1/chat` para OpenAI
 - endpoint `POST /api/v1/google-maps/restaurants/nearby` para Google Places
-- endpoints de perfil/autenticacao em `POST /api/v1/profiles/signup`, `POST /api/v1/profiles/signin` e `GET /api/v1/profiles/me`
+- endpoint `POST /api/v1/infobip/whatsapp/template` para envio de template WhatsApp via Infobip
+- endpoints no-auth de perfis, contextos, lugares, guias e decisao por IA em `/api/v1/perfis`, `/api/v1/grupos`, `/api/v1/lugares`, `/api/v1/guias` e `/api/v1/ia/decidir-restaurante`
 - docs automaticas em `http://127.0.0.1:8000/docs`
 - `main.py` na raiz para rodar direto no PyCharm
 
@@ -29,10 +30,12 @@ app/
   integrations/
     openai/client.py
     google_places/client.py
+    infobip/client.py
     supabase/client.py
   modules/
     chat/
     google_places/
+    infobip/
     profiles/
     groups/
     places/
@@ -66,6 +69,21 @@ Campos esperados:
 - `SUPABASE_KEY`
 - `SUPABASE_PROFILE_BUCKET`
 - `SUPABASE_PROFILE_PHOTO_MAX_BYTES`
+- `INFOBIP_BASE_URL`
+- `INFOBIP_API_KEY`
+- `INFOBIP_WHATSAPP_FROM`
+- `INFOBIP_DEFAULT_TEMPLATE_NAME`
+- `INFOBIP_DEFAULT_LANGUAGE`
+
+### Exemplo Infobip WhatsApp
+
+Com `INFOBIP_API_KEY` e `INFOBIP_WHATSAPP_FROM` configurados:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/api/v1/infobip/whatsapp/template `
+  -H "Content-Type: application/json" `
+  -d '{"to":"5511999999999","placeholders":["Boddenberg"]}'
+```
 
 ## Como rodar
 
@@ -108,6 +126,29 @@ pytest
 ```
 
 ## Setup no Supabase
+
+### Fluxo no-auth atual
+
+Rode o SQL de [supabase/schema.sql](supabase/schema.sql) no SQL Editor do Supabase. Ele cria `public.perfis`, `public.grupos`, `public.lugares` e `public.guias` sem depender de Supabase Auth.
+
+O fluxo principal fica:
+
+- `POST /api/v1/perfis/` cadastra uma pessoa e cria automaticamente o espaco individual dela.
+- `GET /api/v1/perfis/{perfil_id}/contextos` lista os espacos selecionaveis do perfil.
+- `POST /api/v1/grupos/` cria um contexto `individual`, `casal` ou `grupo` com membros ligados por `perfil_id`.
+- `GET /api/v1/grupos/?perfil_id=...` lista os contextos de um perfil.
+- `GET /api/v1/lugares/?grupo_id=...` lista restaurantes do contexto selecionado.
+- `POST /api/v1/lugares/` adiciona restaurante ao contexto; use `adicionado_por_perfil_id` para registrar quem adicionou.
+- `GET /api/v1/guias/?grupo_id=...` lista guias customizados do contexto.
+- `POST /api/v1/guias/` cria um guia com nome, descricao e `lugar_ids`.
+- `POST /api/v1/guias/{guia_id}/lugares` adiciona restaurante ao guia.
+- `PATCH /api/v1/guias/{guia_id}/lugares/reordenar` reordena restaurantes do guia.
+- `POST /api/v1/ia/decidir-restaurante` escolhe restaurante com IA por escopo: `todos`, `favoritos`, `quero_ir` ou `guia`.
+- `GET /api/v1/home/?grupo_id=...` retorna o agregado do contexto selecionado.
+
+### Legado com auth
+
+Os scripts abaixo pertencem ao fluxo antigo com `profiles`, `groups`, `places` e bearer token. Para o app no-auth, prefira o `schema.sql` acima.
 
 ### 1. Perfil base
 
