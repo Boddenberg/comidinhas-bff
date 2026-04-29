@@ -53,6 +53,30 @@ class FakePerfilDuplicadoClient(FakePerfisClient):
         }
 
 
+class FakePerfilLegadoClient(FakePerfisClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.profile = {
+            "id": "perfil-legado",
+            "nome": "Filipe",
+            "email": "filipe@example.com",
+            "grupo_individual_id": None,
+        }
+
+    async def get_perfil(self, *, perfil_id):  # type: ignore[no-untyped-def]
+        if perfil_id == self.profile["id"]:
+            return dict(self.profile)
+        return None
+
+    async def get_perfil_por_email(self, *, email):  # type: ignore[no-untyped-def]
+        if email == self.profile["email"]:
+            return dict(self.profile)
+        return None
+
+    async def get_grupo(self, *, grupo_id):  # type: ignore[no-untyped-def]
+        return None
+
+
 @pytest.mark.anyio
 async def test_criar_perfil_tambem_cria_espaco_individual() -> None:
     fake_client = FakePerfisClient()
@@ -102,6 +126,35 @@ async def test_criar_perfil_recupera_tentativa_anterior_com_email_duplicado() ->
         "perfil_id": "perfil-existente",
         "payload": {"grupo_individual_id": "grupo-individual-1"},
     }
+
+
+@pytest.mark.anyio
+async def test_buscar_perfil_garante_espaco_individual_para_perfil_legado() -> None:
+    fake_client = FakePerfilLegadoClient()
+    use_case = ManagePerfisUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.buscar(perfil_id="perfil-legado")
+
+    assert response.grupo_individual_id == "grupo-individual-1"
+    assert fake_client.inserted_group is not None
+    assert fake_client.inserted_group["tipo"] == "individual"
+    assert fake_client.inserted_group["dono_perfil_id"] == "perfil-legado"
+    assert fake_client.updated_profile == {
+        "perfil_id": "perfil-legado",
+        "payload": {"grupo_individual_id": "grupo-individual-1"},
+    }
+
+
+@pytest.mark.anyio
+async def test_buscar_por_email_garante_espaco_individual_para_perfil_legado() -> None:
+    fake_client = FakePerfilLegadoClient()
+    use_case = ManagePerfisUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.buscar_por_email(email="filipe@example.com")
+
+    assert response.grupo_individual_id == "grupo-individual-1"
+    assert fake_client.inserted_group is not None
+    assert fake_client.inserted_group["membros"][0]["perfil_id"] == "perfil-legado"
 
 
 class FakeGruposClient:

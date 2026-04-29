@@ -41,12 +41,14 @@ class ManagePerfisUseCase:
         raw = await self._client.get_perfil(perfil_id=perfil_id)
         if raw is None:
             raise NotFoundError("Perfil não encontrado.")
+        raw = await self._garantir_grupo_individual_no_perfil(raw)
         return self._mapear(raw)
 
     async def buscar_por_email(self, *, email: str) -> PerfilResponse:
         raw = await self._client.get_perfil_por_email(email=email)
         if raw is None:
             raise NotFoundError("Nenhum perfil encontrado com este email.")
+        raw = await self._garantir_grupo_individual_no_perfil(raw)
         return self._mapear(raw)
 
     async def criar(self, *, request: PerfilCreateRequest) -> PerfilResponse:
@@ -172,6 +174,14 @@ class ManagePerfisUseCase:
             payload={"grupo_individual_id": grupo["id"]},
         )
         return grupo
+
+    async def _garantir_grupo_individual_no_perfil(
+        self,
+        raw: dict[str, Any],
+    ) -> dict[str, Any]:
+        grupo = await self._garantir_grupo_individual(perfil=raw)
+        raw["grupo_individual_id"] = grupo["id"]
+        return raw
 
     @staticmethod
     def _mapear(raw: dict[str, Any]) -> PerfilResponse:
