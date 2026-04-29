@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 
-from app.core.errors import BadRequestError, NotFoundError
+from app.core.errors import BadRequestError, ConflictError, NotFoundError
 from app.integrations.supabase.client import SupabaseClient
 from app.modules.grupos.schemas import PapelMembro, TipoGrupo
 from app.modules.perfis.schemas import (
@@ -52,7 +52,16 @@ class ManagePerfisUseCase:
     async def criar(self, *, request: PerfilCreateRequest) -> PerfilResponse:
         logger.info("perfis.criar.start nome=%s has_email=%s", request.nome, bool(request.email))
         payload: dict[str, Any] = request.model_dump(exclude_unset=False)
-        criado = await self._client.insert_perfil(payload=payload)
+        try:
+            criado = await self._client.insert_perfil(payload=payload)
+        except ConflictError:
+            if not request.email:
+                raise
+            existente = await self._client.get_perfil_por_email(email=request.email)
+            if existente is None:
+                raise
+            criado = existente
+
         grupo = await self._garantir_grupo_individual(perfil=criado)
         criado["grupo_individual_id"] = grupo["id"]
         response = self._mapear(criado)

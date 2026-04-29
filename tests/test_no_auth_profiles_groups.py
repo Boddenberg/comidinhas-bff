@@ -20,7 +20,7 @@ from app.modules.grupos.schemas import (
 from app.modules.grupos.use_cases import ManageGruposUseCase
 from app.modules.perfis.schemas import PerfilCreateRequest
 from app.modules.perfis.use_cases import ManagePerfisUseCase
-from app.core.errors import PermissionDeniedError
+from app.core.errors import ConflictError, PermissionDeniedError
 
 
 class FakePerfisClient:
@@ -37,6 +37,19 @@ class FakePerfisClient:
 
     async def update_perfil(self, *, perfil_id, payload):  # type: ignore[no-untyped-def]
         self.updated_profile = {"perfil_id": perfil_id, "payload": payload}
+
+
+class FakePerfilDuplicadoClient(FakePerfisClient):
+    async def insert_perfil(self, *, payload):  # type: ignore[no-untyped-def]
+        raise ConflictError("duplicate key value violates unique constraint")
+
+    async def get_perfil_por_email(self, *, email):  # type: ignore[no-untyped-def]
+        return {
+            "id": "perfil-existente",
+            "nome": "Victor",
+            "email": email,
+            "grupo_individual_id": None,
+        }
 
 
 @pytest.mark.anyio
@@ -66,6 +79,26 @@ async def test_criar_perfil_tambem_cria_espaco_individual() -> None:
     }
     assert fake_client.updated_profile == {
         "perfil_id": "perfil-1",
+        "payload": {"grupo_individual_id": "grupo-individual-1"},
+    }
+
+
+@pytest.mark.anyio
+async def test_criar_perfil_recupera_tentativa_anterior_com_email_duplicado() -> None:
+    fake_client = FakePerfilDuplicadoClient()
+    use_case = ManagePerfisUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.criar(
+        request=PerfilCreateRequest(nome="Victor", email="victor@example.com")
+    )
+
+    assert response.id == "perfil-existente"
+    assert response.grupo_individual_id == "grupo-individual-1"
+    assert fake_client.inserted_group is not None
+    assert fake_client.inserted_group["tipo"] == "individual"
+    assert fake_client.inserted_group["dono_perfil_id"] == "perfil-existente"
+    assert fake_client.updated_profile == {
+        "perfil_id": "perfil-existente",
         "payload": {"grupo_individual_id": "grupo-individual-1"},
     }
 
