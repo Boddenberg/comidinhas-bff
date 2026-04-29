@@ -59,6 +59,8 @@ Copy-Item .env.example .env
 
 Campos esperados:
 
+- `WEB_APP_BASE_URL`
+- `WEB_GROUP_INVITE_PATH`
 - `OPENAI_API_KEY`
 - `OPENAI_CHAT_MODEL`
 - `GOOGLE_MAPS_API_KEY`
@@ -140,6 +142,7 @@ O fluxo principal fica:
 - `POST /api/v1/perfis/` cadastra uma pessoa e cria automaticamente o espaco individual dela.
 - `GET /api/v1/perfis/{perfil_id}/contextos` lista os espacos selecionaveis do perfil.
 - `POST /api/v1/grupos/` cria um contexto `individual`, `casal` ou `grupo` com membros ligados por `perfil_id`; para `grupo`, informe `dono_perfil_id`.
+- `GET /api/v1/grupos/{grupo_id}/convite?responsavel_perfil_id=...` gera link, mensagem copiavel e payload para QR code.
 - `GET /api/v1/grupos/codigo/{codigo}` busca um grupo pelo codigo numerico de 6 digitos.
 - `POST /api/v1/grupos/codigo/{codigo}/solicitacoes` cria uma solicitacao de entrada para o dono aprovar.
 - `GET /api/v1/grupos/{grupo_id}/solicitacoes?responsavel_perfil_id=...` lista solicitacoes (somente dono).

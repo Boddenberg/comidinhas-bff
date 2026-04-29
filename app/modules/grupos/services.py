@@ -4,6 +4,7 @@ import logging
 import secrets
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlencode, urljoin
 from uuid import uuid4
 
 from fastapi import UploadFile
@@ -14,6 +15,7 @@ from app.modules.grupos.policies import GrupoPolicy
 from app.modules.grupos.repositories import GruposGateway
 from app.modules.grupos.schemas import (
     GrupoCreateRequest,
+    GrupoConviteResponse,
     GrupoListResponse,
     GrupoMembroRequest,
     GrupoResponse,
@@ -246,7 +248,7 @@ class GrupoCrudService:
             "membros": self._mapper.dump_membros(membros),
         }
         if request.tipo != TipoGrupo.INDIVIDUAL:
-            payload["codigo"] = await self._gerar_codigo_unico()
+            payload["codigo"] = await gerar_codigo_unico(self._gateway)
 
         criado = await self._gateway.insert_grupo(payload=payload)
         response = self._mapper.mapear_grupo(criado)
@@ -339,14 +341,6 @@ class GrupoCrudService:
         await self._gateway.delete_grupo(grupo_id=grupo_id)
         logger.info("grupos.remover.end grupo_id=%s", grupo_id)
         return {"sucesso": True, "mensagem": "Grupo removido com sucesso."}
-
-    async def _gerar_codigo_unico(self) -> str:
-        for _ in range(20):
-            codigo = f"{secrets.randbelow(1_000_000):06d}"
-            existente = await self._gateway.get_grupo_por_codigo(codigo=codigo)
-            if existente is None:
-                return codigo
-        raise ConflictError("Nao foi possivel gerar um codigo unico para o grupo.")
 
 
 class GrupoMembershipService:
@@ -464,6 +458,61 @@ class GrupoMembershipService:
             payload={"membros": self._mapper.dump_membros(membros)},
         )
         return self._mapper.mapear_grupo(await self._reader.buscar_raw(grupo_id=grupo_id))
+
+
+class GrupoInvitationService:
+    def __init__(
+        self,
+        gateway: GruposGateway,
+        reader: GrupoReader,
+        policy: GrupoPolicy,
+        *,
+        web_app_base_url: str,
+        web_group_invite_path: str,
+        mapper: type[GrupoMapper] = GrupoMapper,
+    ) -> None:
+        self._gateway = gateway
+        self._reader = reader
+        self._policy = policy
+        self._web_app_base_url = web_app_base_url
+        self._web_group_invite_path = web_group_invite_path
+        self._mapper = mapper
+
+    async def gerar_convite(
+        self,
+        *,
+        grupo_id: str,
+        responsavel_perfil_id: str | None,
+    ) -> GrupoConviteResponse:
+        raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        self._policy.exigir_membro(raw=raw, perfil_id=responsavel_perfil_id)
+
+        if self._mapper.tipo_from_raw(raw.get("tipo")) == TipoGrupo.INDIVIDUAL:
+            raise BadRequestError("Nao e possivel gerar convite para um espaco individual.")
+
+        codigo = codigo_grupo(raw.get("codigo"))
+        if codigo is None:
+            codigo = await gerar_codigo_unico(self._gateway)
+            await self._gateway.update_grupo(
+                grupo_id=grupo_id,
+                payload={"codigo": codigo},
+            )
+
+        url = montar_url_convite(
+            base_url=self._web_app_base_url,
+            invite_path=self._web_group_invite_path,
+            codigo=codigo,
+        )
+        grupo_nome = str(raw.get("nome") or "Comidinhas")
+
+        return GrupoConviteResponse(
+            grupo_id=grupo_id,
+            grupo_nome=grupo_nome,
+            codigo=codigo,
+            url=url,
+            qr_code_payload=url,
+            mensagem=montar_mensagem_convite(grupo_nome=grupo_nome, url=url, codigo=codigo),
+        )
 
 
 class GrupoJoinRequestsService:
@@ -671,6 +720,41 @@ async def remover_foto_armazenada(gateway: GruposGateway, object_path: Any) -> N
     if not isinstance(object_path, str) or not object_path:
         return
     await gateway.remove_group_foto(object_path=object_path)
+
+
+async def gerar_codigo_unico(gateway: GruposGateway) -> str:
+    for _ in range(20):
+        codigo = f"{secrets.randbelow(1_000_000):06d}"
+        existente = await gateway.get_grupo_por_codigo(codigo=codigo)
+        if existente is None:
+            return codigo
+    raise ConflictError("Nao foi possivel gerar um codigo unico para o grupo.")
+
+
+def codigo_grupo(raw_codigo: Any) -> str | None:
+    if not isinstance(raw_codigo, str):
+        return None
+    codigo = raw_codigo.strip()
+    if len(codigo) == 6 and codigo.isdigit():
+        return codigo
+    return None
+
+
+def montar_url_convite(*, base_url: str, invite_path: str, codigo: str) -> str:
+    base = (base_url or "https://comidinhas-web-production.up.railway.app").strip()
+    path = (invite_path or "/entrar").strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    url = urljoin(f"{base.rstrip('/')}/", path.lstrip("/"))
+    return f"{url}?{urlencode({'codigo': codigo})}"
+
+
+def montar_mensagem_convite(*, grupo_nome: str, url: str, codigo: str) -> str:
+    return (
+        f"Bora entrar no meu grupo {grupo_nome} no Comidinhas?\n\n"
+        f"Acesse: {url}\n"
+        f"Codigo do grupo: {codigo}"
+    )
 
 
 def encontrar_solicitacao_pendente(

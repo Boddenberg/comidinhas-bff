@@ -24,6 +24,15 @@ class GrupoPolicy:
             return
         raise PermissionDeniedError("Apenas o dono ou administrador do grupo pode fazer esta acao.")
 
+    def exigir_membro(self, *, raw: dict[str, Any], perfil_id: str | None) -> None:
+        if self.papel_no_grupo(raw=raw, perfil_id=perfil_id) in {
+            PapelMembro.DONO,
+            PapelMembro.ADMINISTRADOR,
+            PapelMembro.MEMBRO,
+        }:
+            return
+        raise PermissionDeniedError("Apenas membros do grupo podem fazer esta acao.")
+
     def papel_no_grupo(
         self,
         *,

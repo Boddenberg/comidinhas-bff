@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     app_name: str = "Comidinhas BFF"
     app_env: str = "local"
     app_version: str = "0.1.0"
+    web_app_base_url: str = "https://comidinhas-web-production.up.railway.app"
+    web_group_invite_path: str = "/entrar"
 
     cors_allowed_origins: list[str] = Field(
         default_factory=lambda: [

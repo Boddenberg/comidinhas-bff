@@ -6,6 +6,7 @@ from app.api.dependencies import get_manage_grupos_use_case
 from app.main import app
 from app.modules.grupos.schemas import (
     GrupoCreateRequest,
+    GrupoConviteResponse,
     GrupoListResponse,
     GrupoResponse,
     GrupoUpdateRequest,
@@ -248,6 +249,85 @@ async def test_solicitar_entrada_por_codigo_fica_pendente() -> None:
 
 
 @pytest.mark.anyio
+async def test_gerar_convite_retorna_link_mensagem_e_payload_qr_code() -> None:
+    fake_client = FakeGruposClient()
+    fake_client.groups["grupo-123"] = {
+        "id": "grupo-123",
+        "codigo": "123456",
+        "nome": "Roles",
+        "tipo": "grupo",
+        "dono_perfil_id": "perfil-filipe",
+        "membros": [
+            {
+                "perfil_id": "perfil-filipe",
+                "nome": "Filipe",
+                "email": "filipe@example.com",
+                "papel": "dono",
+            },
+            {
+                "perfil_id": "perfil-victor",
+                "nome": "Victor",
+                "email": "victor@example.com",
+                "papel": "membro",
+            },
+        ],
+        "solicitacoes": [],
+    }
+    use_case = ManageGruposUseCase(
+        client=fake_client,  # type: ignore[arg-type]
+        web_app_base_url="https://comidinhas-web-production.up.railway.app",
+        web_group_invite_path="/entrar",
+    )
+
+    response = await use_case.gerar_convite(
+        grupo_id="grupo-123",
+        responsavel_perfil_id="perfil-victor",
+    )
+
+    assert response.grupo_id == "grupo-123"
+    assert response.grupo_nome == "Roles"
+    assert response.codigo == "123456"
+    assert response.url == "https://comidinhas-web-production.up.railway.app/entrar?codigo=123456"
+    assert response.qr_code_payload == response.url
+    assert response.mensagem == (
+        "Bora entrar no meu grupo Roles no Comidinhas?\n\n"
+        "Acesse: https://comidinhas-web-production.up.railway.app/entrar?codigo=123456\n"
+        "Codigo do grupo: 123456"
+    )
+
+
+@pytest.mark.anyio
+async def test_gerar_convite_cria_codigo_para_grupo_antigo_sem_codigo() -> None:
+    fake_client = FakeGruposClient()
+    fake_client.groups["grupo-123"] = {
+        "id": "grupo-123",
+        "nome": "Roles",
+        "tipo": "grupo",
+        "dono_perfil_id": "perfil-filipe",
+        "membros": [
+            {
+                "perfil_id": "perfil-filipe",
+                "nome": "Filipe",
+                "email": "filipe@example.com",
+                "papel": "dono",
+            }
+        ],
+        "solicitacoes": [],
+    }
+    use_case = ManageGruposUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.gerar_convite(
+        grupo_id="grupo-123",
+        responsavel_perfil_id="perfil-filipe",
+    )
+
+    assert len(response.codigo) == 6
+    assert response.codigo.isdigit()
+    assert fake_client.updated_group is not None
+    assert fake_client.updated_group["payload"] == {"codigo": response.codigo}
+
+
+@pytest.mark.anyio
 async def test_dono_aceita_solicitacao_e_membro_entra_no_grupo() -> None:
     fake_client = FakeGruposClient()
     fake_client.groups["grupo-123"] = {
@@ -359,6 +439,20 @@ class FakeContextosUseCase:
         )
 
 
+class FakeConviteUseCase:
+    async def gerar_convite(self, *, grupo_id, responsavel_perfil_id):  # type: ignore[no-untyped-def]
+        assert grupo_id == "grupo-123"
+        assert responsavel_perfil_id == "perfil-1"
+        return GrupoConviteResponse(
+            grupo_id=grupo_id,
+            grupo_nome="Roles",
+            codigo="123456",
+            url="https://comidinhas-web-production.up.railway.app/entrar?codigo=123456",
+            qr_code_payload="https://comidinhas-web-production.up.railway.app/entrar?codigo=123456",
+            mensagem="Bora entrar no meu grupo Roles no Comidinhas?",
+        )
+
+
 def test_contextos_do_perfil_nao_exige_bearer_token() -> None:
     app.dependency_overrides[get_manage_grupos_use_case] = lambda: FakeContextosUseCase()
 
@@ -370,3 +464,19 @@ def test_contextos_do_perfil_nao_exige_bearer_token() -> None:
     assert response.status_code == 200
     assert response.json()["items"][0]["tipo"] == "individual"
     assert response.json()["items"][0]["membros"][0]["perfil_id"] == "perfil-1"
+
+
+def test_endpoint_convite_retorna_link_para_compartilhar() -> None:
+    app.dependency_overrides[get_manage_grupos_use_case] = lambda: FakeConviteUseCase()
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/grupos/grupo-123/convite",
+            params={"responsavel_perfil_id": "perfil-1"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["url"] == "https://comidinhas-web-production.up.railway.app/entrar?codigo=123456"
+    assert response.json()["qr_code_payload"] == response.json()["url"]

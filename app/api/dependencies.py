@@ -163,8 +163,13 @@ def get_manage_perfis_use_case(
 
 def get_manage_grupos_use_case(
     client: SupabaseClient = Depends(get_supabase_client),
+    settings: Settings = Depends(get_app_settings),
 ) -> ManageGruposUseCase:
-    return ManageGruposUseCase(client=SupabaseGruposGateway(client))
+    return ManageGruposUseCase(
+        client=SupabaseGruposGateway(client),
+        web_app_base_url=settings.web_app_base_url,
+        web_group_invite_path=settings.web_group_invite_path,
+    )
 
 
 def get_manage_lugares_use_case(

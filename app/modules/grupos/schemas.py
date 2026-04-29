@@ -114,6 +114,15 @@ class GrupoListResponse(BaseModel):
     total: int
 
 
+class GrupoConviteResponse(BaseModel):
+    grupo_id: str
+    grupo_nome: str
+    codigo: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+    url: str
+    qr_code_payload: str
+    mensagem: str
+
+
 class GrupoMembroRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 

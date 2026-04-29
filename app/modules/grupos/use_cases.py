@@ -6,6 +6,7 @@ from app.modules.grupos.policies import GrupoPolicy
 from app.modules.grupos.repositories import GruposGateway
 from app.modules.grupos.schemas import (
     GrupoCreateRequest,
+    GrupoConviteResponse,
     GrupoListResponse,
     GrupoMembroRequest,
     GrupoResponse,
@@ -19,6 +20,7 @@ from app.modules.grupos.schemas import (
 )
 from app.modules.grupos.services import (
     GrupoCrudService,
+    GrupoInvitationService,
     GrupoJoinRequestsService,
     GrupoMemberResolver,
     GrupoMembershipService,
@@ -30,7 +32,13 @@ from app.modules.grupos.services import (
 class ManageGruposUseCase:
     """Facade that preserves the route contract while delegating focused work."""
 
-    def __init__(self, client: GruposGateway) -> None:
+    def __init__(
+        self,
+        client: GruposGateway,
+        *,
+        web_app_base_url: str = "https://comidinhas-web-production.up.railway.app",
+        web_group_invite_path: str = "/entrar",
+    ) -> None:
         reader = GrupoReader(client)
         resolver = GrupoMemberResolver(client)
         policy = GrupoPolicy()
@@ -38,6 +46,13 @@ class ManageGruposUseCase:
         self._members = GrupoMembershipService(client, reader, resolver, policy)
         self._requests = GrupoJoinRequestsService(client, reader, resolver, policy)
         self._photos = GrupoPhotoService(client, reader, policy)
+        self._invitations = GrupoInvitationService(
+            client,
+            reader,
+            policy,
+            web_app_base_url=web_app_base_url,
+            web_group_invite_path=web_group_invite_path,
+        )
 
     async def listar(self, *, perfil_id: str | None = None) -> GrupoListResponse:
         return await self._crud.listar(perfil_id=perfil_id)
@@ -47,6 +62,17 @@ class ManageGruposUseCase:
 
     async def buscar_por_codigo(self, *, codigo: str) -> GrupoResponse:
         return await self._crud.buscar_por_codigo(codigo=codigo)
+
+    async def gerar_convite(
+        self,
+        *,
+        grupo_id: str,
+        responsavel_perfil_id: str | None,
+    ) -> GrupoConviteResponse:
+        return await self._invitations.gerar_convite(
+            grupo_id=grupo_id,
+            responsavel_perfil_id=responsavel_perfil_id,
+        )
 
     async def criar(self, *, request: GrupoCreateRequest) -> GrupoResponse:
         return await self._crud.criar(request=request)

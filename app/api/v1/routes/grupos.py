@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, Path, Query, UploadFile
 from app.api.dependencies import get_manage_grupos_use_case
 from app.modules.grupos.schemas import (
     GrupoCreateRequest,
+    GrupoConviteResponse,
     GrupoListResponse,
     GrupoMembroRequest,
     GrupoResponse,
@@ -70,6 +71,22 @@ async def buscar_grupo(
     use_case: ManageGruposUseCase = Depends(get_manage_grupos_use_case),
 ) -> GrupoResponse:
     return await use_case.buscar(grupo_id=grupo_id)
+
+
+@router.get(
+    "/{grupo_id}/convite",
+    response_model=GrupoConviteResponse,
+    summary="Gera link e texto de convite para compartilhar o grupo",
+)
+async def gerar_convite_grupo(
+    grupo_id: str = Path(..., min_length=8, max_length=64),
+    responsavel_perfil_id: str = Query(..., min_length=8, max_length=64),
+    use_case: ManageGruposUseCase = Depends(get_manage_grupos_use_case),
+) -> GrupoConviteResponse:
+    return await use_case.gerar_convite(
+        grupo_id=grupo_id,
+        responsavel_perfil_id=responsavel_perfil_id,
+    )
 
 
 @router.patch("/{grupo_id}", response_model=GrupoResponse, summary="Atualiza nome, tipo, descrição ou membros")
