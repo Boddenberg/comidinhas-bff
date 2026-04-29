@@ -415,6 +415,70 @@ async def test_administrador_edita_infos_mas_nao_define_papeis() -> None:
         )
 
 
+@pytest.mark.anyio
+async def test_atualizar_fundo_resolve_grupo_legado_por_email() -> None:
+    fake_client = FakeGruposClient()
+    fake_client.groups["grupo-legado"] = {
+        "id": "grupo-legado",
+        "codigo": "123456",
+        "nome": "Casal de filipe",
+        "tipo": "casal",
+        "dono_perfil_id": None,
+        "membros": [
+            {
+                "nome": "filipe",
+                "email": "filipe@example.com",
+                "papel": "membro",
+            }
+        ],
+        "solicitacoes": [],
+    }
+    use_case = ManageGruposUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.atualizar(
+        grupo_id="grupo-legado",
+        request=GrupoUpdateRequest(
+            foto_url="fotos-grupo/fundo.png",
+            responsavel_perfil_id="perfil-filipe",
+        ),
+    )
+
+    assert response.foto_url == "fotos-grupo/fundo.png"
+    assert response.dono_perfil_id == "perfil-filipe"
+    assert response.membros[0].perfil_id == "perfil-filipe"
+    assert response.membros[0].papel == PapelMembro.DONO
+
+
+@pytest.mark.anyio
+async def test_gerar_convite_resolve_grupo_legado_por_email() -> None:
+    fake_client = FakeGruposClient()
+    fake_client.groups["grupo-legado"] = {
+        "id": "grupo-legado",
+        "codigo": "123456",
+        "nome": "Casal de filipe",
+        "tipo": "casal",
+        "dono_perfil_id": None,
+        "membros": [
+            {
+                "nome": "filipe",
+                "email": "filipe@example.com",
+                "papel": "membro",
+            }
+        ],
+        "solicitacoes": [],
+    }
+    use_case = ManageGruposUseCase(client=fake_client)  # type: ignore[arg-type]
+
+    response = await use_case.gerar_convite(
+        grupo_id="grupo-legado",
+        responsavel_perfil_id="perfil-filipe",
+    )
+
+    assert response.codigo == "123456"
+    assert fake_client.groups["grupo-legado"]["dono_perfil_id"] == "perfil-filipe"
+    assert fake_client.groups["grupo-legado"]["membros"][0]["perfil_id"] == "perfil-filipe"
+
+
 class FakeContextosUseCase:
     async def listar(self, *, perfil_id: str | None = None):  # type: ignore[no-untyped-def]
         assert perfil_id == "perfil-1"

@@ -264,6 +264,12 @@ class GrupoCrudService:
     async def atualizar(self, *, grupo_id: str, request: GrupoUpdateRequest) -> GrupoResponse:
         logger.info("grupos.atualizar.start grupo_id=%s fields=%s", grupo_id, sorted(request.model_fields_set))
         atual = await self._reader.buscar_raw(grupo_id=grupo_id)
+        atual = await resolver_responsavel_legado(
+            self._gateway,
+            raw=atual,
+            perfil_id=request.responsavel_perfil_id,
+            mapper=self._mapper,
+        )
 
         campos = set(request.model_fields_set) - {"responsavel_perfil_id"}
         if not campos:
@@ -336,6 +342,12 @@ class GrupoCrudService:
     async def remover(self, *, grupo_id: str, responsavel_perfil_id: str | None) -> dict[str, Any]:
         logger.info("grupos.remover.start grupo_id=%s", grupo_id)
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_dono(raw=raw, perfil_id=responsavel_perfil_id)
         await remover_foto_armazenada(self._gateway, raw.get("foto_caminho"))
         await self._gateway.delete_grupo(grupo_id=grupo_id)
@@ -365,6 +377,12 @@ class GrupoMembershipService:
         request: GrupoMembroRequest,
     ) -> GrupoResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=request.responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_dono(raw=raw, perfil_id=request.responsavel_perfil_id)
         if request.papel == PapelMembro.DONO:
             raise BadRequestError("Um grupo pode ter apenas um dono.")
@@ -407,6 +425,12 @@ class GrupoMembershipService:
         responsavel_perfil_id: str | None,
     ) -> GrupoResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         dono_perfil_id = raw.get("dono_perfil_id")
         if perfil_id == dono_perfil_id:
             raise BadRequestError("O dono do grupo nao pode ser removido por aqui.")
@@ -442,6 +466,12 @@ class GrupoMembershipService:
         request: PapelMembroUpdateRequest,
     ) -> GrupoResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=request.responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_dono(raw=raw, perfil_id=request.responsavel_perfil_id)
         if perfil_id == raw.get("dono_perfil_id"):
             raise BadRequestError("O papel do dono nao pode ser alterado por aqui.")
@@ -485,6 +515,12 @@ class GrupoInvitationService:
         responsavel_perfil_id: str | None,
     ) -> GrupoConviteResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_membro(raw=raw, perfil_id=responsavel_perfil_id)
 
         if self._mapper.tipo_from_raw(raw.get("tipo")) == TipoGrupo.INDIVIDUAL:
@@ -578,6 +614,12 @@ class GrupoJoinRequestsService:
         status: StatusSolicitacaoGrupo | None = None,
     ) -> SolicitacaoEntradaGrupoListResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_dono(raw=raw, perfil_id=responsavel_perfil_id)
         solicitacoes = self._mapper.parse_solicitacoes(raw.get("solicitacoes"))
         if status is not None:
@@ -595,6 +637,12 @@ class GrupoJoinRequestsService:
         request: ResponderSolicitacaoGrupoRequest,
     ) -> GrupoResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=request.responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_dono(raw=raw, perfil_id=request.responsavel_perfil_id)
 
         solicitacoes = self._mapper.parse_solicitacoes(raw.get("solicitacoes"))
@@ -632,6 +680,12 @@ class GrupoJoinRequestsService:
         request: ResponderSolicitacaoGrupoRequest,
     ) -> GrupoResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=request.responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_dono(raw=raw, perfil_id=request.responsavel_perfil_id)
 
         solicitacoes = self._mapper.parse_solicitacoes(raw.get("solicitacoes"))
@@ -671,6 +725,12 @@ class GrupoPhotoService:
         file: UploadFile,
     ) -> GrupoResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_editor(raw=raw, perfil_id=responsavel_perfil_id)
 
         content_type = file.content_type or ""
@@ -707,6 +767,12 @@ class GrupoPhotoService:
         responsavel_perfil_id: str | None,
     ) -> GrupoResponse:
         raw = await self._reader.buscar_raw(grupo_id=grupo_id)
+        raw = await resolver_responsavel_legado(
+            self._gateway,
+            raw=raw,
+            perfil_id=responsavel_perfil_id,
+            mapper=self._mapper,
+        )
         self._policy.exigir_editor(raw=raw, perfil_id=responsavel_perfil_id)
         await remover_foto_armazenada(self._gateway, raw.get("foto_caminho"))
         await self._gateway.update_grupo(
@@ -720,6 +786,79 @@ async def remover_foto_armazenada(gateway: GruposGateway, object_path: Any) -> N
     if not isinstance(object_path, str) or not object_path:
         return
     await gateway.remove_group_foto(object_path=object_path)
+
+
+async def resolver_responsavel_legado(
+    gateway: GruposGateway,
+    *,
+    raw: dict[str, Any],
+    perfil_id: str | None,
+    mapper: type[GrupoMapper] = GrupoMapper,
+) -> dict[str, Any]:
+    if not perfil_id:
+        return raw
+
+    membros = mapper.parse_membros(raw.get("membros"))
+    if raw.get("dono_perfil_id") == perfil_id or any(m.perfil_id == perfil_id for m in membros):
+        return raw
+
+    perfil = await gateway.get_perfil(perfil_id=perfil_id)
+    if not isinstance(perfil, dict):
+        return raw
+
+    perfil_email = normalizar_email(perfil.get("email"))
+    if not perfil_email:
+        return raw
+
+    membro = next((m for m in membros if normalizar_email(m.email) == perfil_email), None)
+    if membro is None:
+        return raw
+
+    mudou = False
+    if membro.perfil_id != perfil_id:
+        membro.perfil_id = perfil_id
+        mudou = True
+    if not membro.nome and perfil.get("nome"):
+        membro.nome = str(perfil.get("nome"))
+        mudou = True
+    if not membro.email and perfil.get("email"):
+        membro.email = str(perfil.get("email"))
+        mudou = True
+
+    if not raw.get("dono_perfil_id"):
+        raw["dono_perfil_id"] = perfil_id
+        membro.papel = PapelMembro.DONO
+        mudou = True
+
+    if raw.get("dono_perfil_id") == perfil_id:
+        for item in membros:
+            proximo_papel = PapelMembro.DONO if item is membro else (
+                PapelMembro.MEMBRO if item.papel == PapelMembro.DONO else item.papel
+            )
+            if item.papel != proximo_papel:
+                item.papel = proximo_papel
+                mudou = True
+
+    if not mudou:
+        return raw
+
+    raw["membros"] = mapper.dump_membros(membros)
+    payload: dict[str, Any] = {"membros": raw["membros"]}
+    if raw.get("dono_perfil_id") == perfil_id:
+        payload["dono_perfil_id"] = perfil_id
+
+    grupo_id = str(raw.get("id") or "")
+    if grupo_id:
+        await gateway.update_grupo(grupo_id=grupo_id, payload=payload)
+
+    return raw
+
+
+def normalizar_email(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    email = value.strip().lower()
+    return email or None
 
 
 async def gerar_codigo_unico(gateway: GruposGateway) -> str:
