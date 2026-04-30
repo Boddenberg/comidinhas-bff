@@ -237,6 +237,58 @@ class RecomendarRestaurantesResponse(BaseModel):
     provider: str = "openai"
 
 
+class TodayRecommendationsRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    grupo_id: str = Field(..., min_length=8, max_length=64)
+    perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    limit: int = Field(default=3, ge=1, le=3)
+    radius_meters: int = Field(default=2500, ge=100, le=50000)
+    mood: str | None = Field(default=None, max_length=160)
+    weather: str | None = Field(default=None, max_length=160)
+
+    @field_validator("grupo_id", "perfil_id", "mood", "weather", mode="before")
+    @classmethod
+    def vazio_para_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class TodayRecommendationItem(BaseModel):
+    id: str
+    google_place_id: str
+    group_id: str
+    name: str
+    category: str | None = None
+    neighborhood: str | None = None
+    city: str | None = None
+    price_range: int | None = Field(default=None, ge=1, le=4)
+    link: str | None = None
+    notes: str | None = None
+    status: StatusLugar = StatusLugar.QUERO_IR
+    is_favorite: bool = False
+    image_url: str | None = None
+    rating: float | None = None
+    user_rating_count: int | None = None
+    added_by: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    photos: list[dict[str, Any]] = Field(default_factory=list)
+    formatted_address: str | None = None
+    recommendation_reason: str | None = None
+
+
+class TodayRecommendationsResponse(BaseModel):
+    generated_at: str
+    places: list[TodayRecommendationItem] = Field(default_factory=list)
+    total_candidates: int = 0
+    model: str
+    provider: str = "openai"
+
+
 def _normalizar_lista_texto(value: list[str] | None) -> list[str]:
     if not value:
         return []

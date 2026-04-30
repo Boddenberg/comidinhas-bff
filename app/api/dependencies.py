@@ -9,6 +9,7 @@ from app.integrations.supabase.client import SupabaseClient
 from app.integrations.supabase.repositories import SupabaseGruposGateway
 from app.modules.chat.use_cases import ChatWithOpenAIUseCase
 from app.modules.decisoes.recomendacoes import RecomendarRestaurantesUseCase
+from app.modules.decisoes.today_recommendations import TodayRecommendationsUseCase
 from app.modules.decisoes.use_cases import DecidirRestauranteUseCase
 from app.modules.google_places.use_cases import (
     AutocompletePlacesUseCase,
@@ -118,6 +119,20 @@ def get_recomendar_restaurantes_use_case(
     settings: Settings = Depends(get_app_settings),
 ) -> RecomendarRestaurantesUseCase:
     return RecomendarRestaurantesUseCase(
+        openai_client=openai_client,
+        google_client=google_client,
+        supabase_client=supabase_client,
+        model=settings.openai_chat_model,
+    )
+
+
+def get_today_recommendations_use_case(
+    openai_client: OpenAIClient = Depends(get_openai_client),
+    google_client: GooglePlacesClient = Depends(get_google_places_client),
+    supabase_client: SupabaseClient = Depends(get_supabase_client),
+    settings: Settings = Depends(get_app_settings),
+) -> TodayRecommendationsUseCase:
+    return TodayRecommendationsUseCase(
         openai_client=openai_client,
         google_client=google_client,
         supabase_client=supabase_client,
