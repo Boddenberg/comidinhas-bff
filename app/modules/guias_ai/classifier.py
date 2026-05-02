@@ -125,6 +125,16 @@ class ContentClassifier:
             if heuristic.confianca >= 0.8:
                 return heuristic
 
+        # Atalho: se a heuristica detecta um ranking obvio com confianca alta,
+        # nao precisamos chamar o LLM apenas para classificar — economiza tokens
+        # e cuts uma viagem de rede.
+        if (
+            heuristic.tipo == TipoConteudo.RANKING_GASTRONOMICO
+            and heuristic.confianca >= self._settings.guias_ai_classifier_skip_score
+        ):
+            logger.info("guias_ai.classifier.heuristic_shortcut tipo=%s", heuristic.tipo.value)
+            return heuristic
+
         try:
             return await self._classificar_com_llm(texto, fallback=heuristic)
         except ExternalServiceError as exc:
@@ -196,9 +206,14 @@ class ContentClassifier:
             )
 
         if list_hits >= 1 or food_hits >= 4:
+            confianca_ranking = 0.6
+            if list_hits >= 2 and food_hits >= 6:
+                confianca_ranking = 0.9
+            elif list_hits >= 2 or food_hits >= 8:
+                confianca_ranking = 0.78
             return ContentClassification(
                 tipo=TipoConteudo.RANKING_GASTRONOMICO,
-                confianca=0.6,
+                confianca=confianca_ranking,
                 motivo="texto parece um ranking ou lista gastronomica",
             )
 

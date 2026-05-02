@@ -70,6 +70,19 @@ class Settings(BaseSettings):
     guias_ai_step_max_attempts: int = Field(default=3, ge=1, le=8)
     guias_ai_job_max_seconds: int = Field(default=900, ge=30, le=3600)
     guias_ai_prompt_version: str = "1.0.0"
+    guias_ai_chunk_size_chars: int = Field(default=12_000, ge=2_000, le=40_000)
+    guias_ai_chunk_overlap_chars: int = Field(default=1_500, ge=0, le=8_000)
+    guias_ai_chunk_concurrency: int = Field(default=3, ge=1, le=8)
+    guias_ai_classifier_skip_score: float = Field(default=0.85, ge=0.5, le=1.0)
+    guias_ai_idempotency_window_hours: int = Field(default=24, ge=1, le=168)
+    guias_ai_max_active_jobs_per_grupo: int = Field(default=3, ge=1, le=20)
+    guias_ai_watchdog_max_silence_seconds: int = Field(default=180, ge=30, le=1800)
+    guias_ai_places_cache_ttl_seconds: int = Field(default=86_400, ge=60, le=604_800)
+    guias_ai_places_cache_max_entries: int = Field(default=1024, ge=16, le=10_000)
+    guias_ai_auto_create_lugares: bool = True
+    guias_ai_auto_create_min_score: float = Field(default=0.85, ge=0.5, le=1.0)
+    guias_ai_stream_max_seconds: int = Field(default=240, ge=10, le=900)
+    guias_ai_stream_poll_seconds: float = Field(default=1.5, ge=0.2, le=10.0)
 
     supabase_url: str | None = None
     supabase_key: str | None = None

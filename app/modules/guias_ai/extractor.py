@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -121,8 +122,49 @@ class GuideExtractor:
         self._settings = settings
 
     async def extrair(self, texto: str) -> ExtractedGuide:
-        amostra = texto[: min(len(texto), self._settings.guias_ai_text_max_chars)]
-        prompt = self._montar_prompt(amostra)
+        full_text = texto[: min(len(texto), self._settings.guias_ai_text_max_chars)]
+        chunks = self._split_chunks(full_text)
+        if len(chunks) <= 1:
+            return await self._extrair_chunk(full_text, chunk_index=0, total_chunks=1)
+
+        logger.info(
+            "guias_ai.extractor.chunked total_chars=%s chunks=%s overlap=%s",
+            len(full_text),
+            len(chunks),
+            self._settings.guias_ai_chunk_overlap_chars,
+        )
+
+        semaphore = asyncio.Semaphore(self._settings.guias_ai_chunk_concurrency)
+
+        async def run(idx: int, body: str) -> ExtractedGuide:
+            async with semaphore:
+                return await self._extrair_chunk(
+                    body,
+                    chunk_index=idx,
+                    total_chunks=len(chunks),
+                )
+
+        partials = await asyncio.gather(
+            *(run(idx, chunk) for idx, chunk in enumerate(chunks)),
+            return_exceptions=False,
+        )
+        merged = self._merge_partials(partials)
+        if not merged.restaurantes:
+            return self._fallback_deterministico(full_text)
+        return merged
+
+    async def _extrair_chunk(
+        self,
+        texto: str,
+        *,
+        chunk_index: int,
+        total_chunks: int,
+    ) -> ExtractedGuide:
+        prompt = self._montar_prompt(
+            texto,
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+        )
         try:
             payload = await self._openai_client.chat_json(
                 prompt=prompt,
@@ -132,14 +174,175 @@ class GuideExtractor:
                 schema=_EXTRACTOR_SCHEMA,
             )
         except ExternalServiceError as exc:
-            logger.warning("guias_ai.extractor.llm_failed reason=%s", exc)
-            return self._fallback_deterministico(texto)
+            logger.warning(
+                "guias_ai.extractor.llm_failed chunk=%s reason=%s",
+                chunk_index,
+                exc,
+            )
+            if total_chunks == 1:
+                return self._fallback_deterministico(texto)
+            return ExtractedGuide()
 
         return self._mapear(payload)
 
-    def _montar_prompt(self, texto: str) -> str:
+    def _split_chunks(self, texto: str) -> list[str]:
+        size = self._settings.guias_ai_chunk_size_chars
+        overlap = min(self._settings.guias_ai_chunk_overlap_chars, max(size - 1, 0))
+        if len(texto) <= size:
+            return [texto]
+
+        chunks: list[str] = []
+        start = 0
+        # Tenta cortar em quebras de paragrafo proximas pra nao partir um restaurante.
+        while start < len(texto):
+            end = min(len(texto), start + size)
+            if end < len(texto):
+                soft_break = texto.rfind("\n\n", start + int(size * 0.6), end)
+                if soft_break == -1:
+                    soft_break = texto.rfind("\n", start + int(size * 0.7), end)
+                if soft_break != -1 and soft_break > start + 1000:
+                    end = soft_break
+            chunks.append(texto[start:end])
+            if end >= len(texto):
+                break
+            start = max(end - overlap, start + 1)
+        return chunks
+
+    def _merge_partials(self, partials: list[ExtractedGuide]) -> ExtractedGuide:
+        merged_restaurants: list[ExtractedRestaurant] = []
+        seen: dict[tuple[str, str | None, str | None], ExtractedRestaurant] = {}
+        confidencias: list[float] = []
+
+        # Metadata: pega o primeiro nao-vazio em ordem dos chunks (geralmente o cabecalho aparece no chunk 0).
+        meta_titulo: str | None = None
+        meta_fonte: str | None = None
+        meta_autor: str | None = None
+        meta_data: str | None = None
+        meta_categoria: str | None = None
+        meta_cidade: str | None = None
+        meta_regiao: str | None = None
+        meta_descricao: str | None = None
+        meta_tipo: str | None = None
+        meta_qty: int | None = None
+
+        for partial in partials:
+            if not isinstance(partial, ExtractedGuide):
+                continue
+            if partial.confianca > 0:
+                confidencias.append(partial.confianca)
+            if not meta_titulo and partial.titulo:
+                meta_titulo = partial.titulo
+            if not meta_fonte and partial.fonte:
+                meta_fonte = partial.fonte
+            if not meta_autor and partial.autor:
+                meta_autor = partial.autor
+            if not meta_data and partial.data_publicacao:
+                meta_data = partial.data_publicacao
+            if not meta_categoria and partial.categoria:
+                meta_categoria = partial.categoria
+            if not meta_cidade and partial.cidade_principal:
+                meta_cidade = partial.cidade_principal
+            if not meta_regiao and partial.regiao:
+                meta_regiao = partial.regiao
+            if not meta_descricao and partial.descricao:
+                meta_descricao = partial.descricao
+            if not meta_tipo and partial.tipo_guia_detectado:
+                meta_tipo = partial.tipo_guia_detectado
+            if meta_qty is None and partial.quantidade_esperada:
+                meta_qty = partial.quantidade_esperada
+
+            for restaurant in partial.restaurantes:
+                key = (
+                    restaurant.nome_normalizado,
+                    (restaurant.cidade or "").strip().lower() or None,
+                    (restaurant.bairro or "").strip().lower() or None,
+                )
+                existing = seen.get(key)
+                if existing is None:
+                    # Tambem checa duplicidade so por nome (sem bairro) — overlap entre chunks.
+                    name_only_key = (restaurant.nome_normalizado, None, None)
+                    duplicate = next(
+                        (
+                            value
+                            for k, value in seen.items()
+                            if k[0] == restaurant.nome_normalizado
+                            and (
+                                k[1] is None
+                                or key[1] is None
+                                or k[1] == key[1]
+                            )
+                        ),
+                        None,
+                    )
+                    if duplicate is not None:
+                        existing = duplicate
+
+                if existing is None:
+                    seen[key] = restaurant
+                    merged_restaurants.append(restaurant)
+                else:
+                    self._enrich_existing(existing, restaurant)
+
+        # Normaliza ordem e posicao final.
+        merged_restaurants.sort(
+            key=lambda r: (
+                r.posicao_ranking if r.posicao_ranking is not None else 9_999,
+                r.ordem,
+            )
+        )
+        for new_idx, restaurant in enumerate(merged_restaurants):
+            restaurant.ordem = new_idx
+
+        return ExtractedGuide(
+            titulo=meta_titulo,
+            fonte=meta_fonte,
+            autor=meta_autor,
+            data_publicacao=meta_data,
+            categoria=meta_categoria,
+            cidade_principal=meta_cidade,
+            regiao=meta_regiao,
+            descricao=meta_descricao,
+            tipo_guia_detectado=meta_tipo,
+            quantidade_esperada=meta_qty,
+            confianca=(sum(confidencias) / len(confidencias)) if confidencias else 0.4,
+            restaurantes=merged_restaurants[: self._settings.guias_ai_max_items_per_guide],
+        )
+
+    @staticmethod
+    def _enrich_existing(
+        existing: ExtractedRestaurant,
+        new: ExtractedRestaurant,
+    ) -> None:
+        if new.confianca_extracao > existing.confianca_extracao:
+            existing.confianca_extracao = new.confianca_extracao
+        if existing.posicao_ranking is None and new.posicao_ranking is not None:
+            existing.posicao_ranking = new.posicao_ranking
+        for field in ("bairro", "cidade", "estado", "categoria", "unidade", "trecho_original"):
+            current = getattr(existing, field)
+            other = getattr(new, field)
+            if not current and other:
+                setattr(existing, field, other)
+        merged_alerts = list(dict.fromkeys([*existing.alertas, *new.alertas]))
+        existing.alertas = merged_alerts[:8]
+
+    def _montar_prompt(
+        self,
+        texto: str,
+        *,
+        chunk_index: int = 0,
+        total_chunks: int = 1,
+    ) -> str:
+        chunk_hint = ""
+        if total_chunks > 1:
+            chunk_hint = (
+                f"\nEste e o trecho {chunk_index + 1} de {total_chunks} de um texto longo. "
+                "Extraia apenas restaurantes que aparecem neste trecho. "
+                "Pode haver sobreposicao com outros trechos: nao se preocupe, "
+                "a deduplicacao e feita depois.\n"
+            )
         return (
-            "A partir do texto abaixo, extraia o guia gastronomico principal e seus restaurantes. "
+            chunk_hint
+            + "A partir do texto abaixo, extraia o guia gastronomico principal e seus restaurantes. "
             "Inclua titulo, fonte (site ou veiculo), autor (se identificavel), "
             "data de publicacao (se houver), categoria gastronomica (ex: hamburguerias, pizzarias, japoneses, bares, cafes), "
             "cidade_principal, regiao, descricao curta, tipo_guia_detectado, quantidade_esperada, e nivel de confianca. "
