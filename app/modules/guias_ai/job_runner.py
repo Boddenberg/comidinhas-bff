@@ -247,6 +247,16 @@ class JobRunner:
                 payload={"guia_id": guia_id_parcial},
             )
 
+        # 2.2 Insere os itens em DB com dados basicos JA. Isso garante que o
+        # usuario abra o guia e veja todos os cards (com nome, posicao, bairro)
+        # mesmo antes do enriquecimento por Google completar.
+        item_ids: dict[int, str] = {}
+        if guia_id_parcial:
+            item_ids = await self._inserir_itens_iniciais(
+                guia_id=guia_id_parcial,
+                candidatos=candidatos,
+            )
+
         # 3. Match interno
         await self._update_job_status(
             job_id=job_id,
@@ -261,43 +271,13 @@ class JobRunner:
                 inventario=inventario,
             )
 
-        # 4. Busca/Enriquecimento Google so para itens nao-fortes internamente
-        await self._update_job_status(
-            job_id=job_id,
-            status=JobStatus.SEARCHING_GOOGLE_PLACES,
-            mensagem="Buscando dados no Maps.",
-        )
-        a_enriquecer = [
-            restaurant
-            for index, restaurant in enumerate(candidatos)
-            if matches[index][2] != StatusMatching.ENCONTRADO_INTERNO
-        ]
+        items_finais: list[EnrichedItem] = [None] * len(candidatos)  # type: ignore[list-item]
 
-        if not self._settings.is_google_places_configured:
-            enriched_partial: list[EnrichedItem] = []
-            calls_done = 0
-            photos_found = 0
-            alertas.append("google_places_nao_configurado")
-        else:
-            enriched_partial, calls_done, photos_found = await self._places_enricher.enriquecer_lote(
-                extracted_items=a_enriquecer,
-                guide_cidade=extracted.cidade_principal,
-                guide_categoria=extracted.categoria,
-                budget=self._settings.guias_ai_max_places_lookups_per_job,
-            )
-
-        await self._update_job_status(
-            job_id=job_id,
-            status=JobStatus.ENRICHING_PLACES,
-            mensagem="Enriquecendo dados.",
-        )
-
-        enriched_by_index: dict[int, EnrichedItem] = {}
-        enriched_iter = iter(enriched_partial)
+        # Itens que ja batem com lugar interno: aplicam-se imediatamente.
         for index, restaurant in enumerate(candidatos):
             internal_lugar, internal_score, internal_status = matches[index]
             if internal_status == StatusMatching.ENCONTRADO_INTERNO and internal_lugar:
-                enriched_by_index[index] = EnrichedItem(
+                enriched = EnrichedItem(
                     extracted=restaurant,
                     place_id=internal_lugar.get("place_id"),
                     nome_oficial=internal_lugar.get("nome"),
@@ -310,31 +290,88 @@ class JobRunner:
                     lugar_id=internal_lugar.get("id"),
                     lugar_existente=internal_lugar,
                 )
-                continue
+                items_finais[index] = enriched
+                await self._patch_item_enriquecido(
+                    item_id=item_ids.get(index),
+                    item=enriched,
+                )
 
-            try:
-                enriched = next(enriched_iter)
-            except StopIteration:
-                enriched = EnrichedItem(
+        # 4. Busca/Enriquecimento Google so para itens nao-fortes internamente
+        await self._update_job_status(
+            job_id=job_id,
+            status=JobStatus.SEARCHING_GOOGLE_PLACES,
+            mensagem="Buscando dados no Maps.",
+        )
+        a_enriquecer: list[tuple[int, ExtractedRestaurant]] = [
+            (index, restaurant)
+            for index, restaurant in enumerate(candidatos)
+            if matches[index][2] != StatusMatching.ENCONTRADO_INTERNO
+        ]
+
+        calls_done = 0
+        photos_found = 0
+        if not self._settings.is_google_places_configured:
+            alertas.append("google_places_nao_configurado")
+            for index, restaurant in a_enriquecer:
+                pendente = EnrichedItem(
+                    extracted=restaurant,
+                    status_matching=StatusMatching.PENDENTE,
+                    alertas=["google_places_nao_configurado"],
+                )
+                items_finais[index] = self._aplicar_match_parcial(
+                    pendente, matches[index]
+                )
+                await self._patch_item_enriquecido(
+                    item_id=item_ids.get(index),
+                    item=items_finais[index],
+                )
+        else:
+            await self._update_job_status(
+                job_id=job_id,
+                status=JobStatus.ENRICHING_PLACES,
+                mensagem="Enriquecendo dados.",
+            )
+            stream = self._places_enricher.enriquecer_streaming(
+                extracted_items=a_enriquecer,
+                guide_cidade=extracted.cidade_principal,
+                guide_categoria=extracted.categoria,
+                budget=self._settings.guias_ai_max_places_lookups_per_job,
+            )
+            async for index, enriched, calls, has_photo in stream:
+                calls_done += calls
+                if has_photo:
+                    photos_found += 1
+                enriched = self._aplicar_match_parcial(enriched, matches[index])
+                items_finais[index] = enriched
+                await self._patch_item_enriquecido(
+                    item_id=item_ids.get(index),
+                    item=enriched,
+                )
+
+        # Por garantia, preenche qualquer slot que ficou vazio (nao deveria, mas defensivo).
+        for index, restaurant in enumerate(candidatos):
+            if items_finais[index] is None:
+                items_finais[index] = EnrichedItem(
                     extracted=restaurant,
                     status_matching=StatusMatching.PENDENTE,
                     alertas=["nao_processado"],
                 )
+                await self._patch_item_enriquecido(
+                    item_id=item_ids.get(index),
+                    item=items_finais[index],
+                )
 
-            if internal_status == StatusMatching.POSSIVEL_DUPLICADO and internal_lugar:
-                enriched.lugar_id = internal_lugar.get("id")
-                enriched.lugar_existente = internal_lugar
-                if enriched.status_matching not in (
-                    StatusMatching.NAO_ENCONTRADO,
-                    StatusMatching.IGNORADO,
-                ):
-                    enriched.status_matching = StatusMatching.POSSIVEL_DUPLICADO
-                    enriched.alertas.append("possivel_duplicado_interno")
-
-            enriched_by_index[index] = enriched
-
-        items_finais = [enriched_by_index[i] for i in range(len(candidatos))]
         items_finais = self._deduplicar_por_place_id(items_finais)
+        # Propaga os IGNORADO da deduplicacao para o banco.
+        for index, item in enumerate(items_finais):
+            if item.status_matching == StatusMatching.IGNORADO and item_ids.get(index):
+                await self._supabase.update_guia_item(
+                    item_id=item_ids[index],
+                    payload={
+                        "status_matching": StatusMatching.IGNORADO.value,
+                        "alertas": [*item.extracted.alertas, *item.alertas],
+                    },
+                )
 
         # 4.1 Cria lugares para os matches Google de alta confianca
         # que ainda nao existem no banco interno do grupo.
@@ -343,6 +380,7 @@ class JobRunner:
                 grupo_id=grupo_id,
                 items=items_finais,
                 inventario=inventario,
+                item_ids=item_ids,
             )
 
         # 5. Capa
@@ -475,19 +513,22 @@ class JobRunner:
                 )
                 alertas.append("falha_ao_atualizar_guia")
 
-        itens_payload = [
-            self._build_item_payload(guia_id=guia_id, ordem=index, item=item)
-            for index, item in enumerate(items_finais)
-        ]
-        try:
-            await self._supabase.insert_guia_itens(items=itens_payload)
-        except ExternalServiceError as exc:
-            logger.warning(
-                "guias_ai.job.insert_itens_failed job_id=%s reason=%s",
-                job_id,
-                exc.message,
-            )
-            alertas.append("falha_ao_persistir_itens")
+        # Os itens ja foram inseridos incrementalmente. Se o guia teve que ser
+        # criado tarde (caminho de fallback), faz o bulk insert agora.
+        if guia_id and not item_ids:
+            itens_payload = [
+                self._build_item_payload(guia_id=guia_id, ordem=index, item=item)
+                for index, item in enumerate(items_finais)
+            ]
+            try:
+                await self._supabase.insert_guia_itens(items=itens_payload)
+            except ExternalServiceError as exc:
+                logger.warning(
+                    "guias_ai.job.insert_itens_failed job_id=%s reason=%s",
+                    job_id,
+                    exc.message,
+                )
+                alertas.append("falha_ao_persistir_itens")
 
         # 8. Conclusao
         duracao_ms = int((time.perf_counter() - started_at) * 1000)
@@ -643,15 +684,18 @@ class JobRunner:
         grupo_id: str,
         items: list[EnrichedItem],
         inventario: list[dict[str, Any]],
-    ) -> None:
+        item_ids: dict[int, str] | None = None,
+    ) -> list[str]:
         existing_place_ids = {
             str(lugar.get("place_id"))
             for lugar in inventario
             if isinstance(lugar, dict) and lugar.get("place_id")
         }
         min_score = self._settings.guias_ai_auto_create_min_score
+        criados: list[str] = []
+        item_ids = item_ids or {}
 
-        for item in items:
+        for index, item in enumerate(items):
             if item.lugar_id:
                 continue
             if not item.place_id or item.place_id in existing_place_ids:
@@ -688,12 +732,31 @@ class JobRunner:
             item.lugar_existente = criado
             item.status_matching = StatusMatching.CRIADO_AUTOMATICAMENTE
             existing_place_ids.add(item.place_id)
+            criados.append(new_id)
+            db_item_id = item_ids.get(index)
+            if db_item_id:
+                try:
+                    await self._supabase.update_guia_item(
+                        item_id=db_item_id,
+                        payload={
+                            "lugar_id": new_id,
+                            "status_matching": StatusMatching.CRIADO_AUTOMATICAMENTE.value,
+                        },
+                    )
+                except ExternalServiceError as exc:
+                    logger.warning(
+                        "guias_ai.auto_create_lugar.patch_item_failed item_id=%s reason=%s",
+                        db_item_id,
+                        exc.message,
+                    )
             logger.info(
                 "guias_ai.auto_create_lugar.created grupo_id=%s lugar_id=%s place_id=%s",
                 grupo_id,
                 new_id,
                 item.place_id,
             )
+
+        return criados
 
     @staticmethod
     def _build_lugar_payload(
@@ -730,6 +793,122 @@ class JobRunner:
                 "categorias_google": item.categorias_google,
                 "fonte": "guias_ai_auto",
                 "criado_em_iso": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+
+    async def _inserir_itens_iniciais(
+        self,
+        *,
+        guia_id: str,
+        candidatos: list[ExtractedRestaurant],
+    ) -> dict[int, str]:
+        if not candidatos:
+            return {}
+        payload = [
+            {
+                "guia_id": guia_id,
+                "ordem": index,
+                "posicao_ranking": restaurant.posicao_ranking,
+                "nome_importado": restaurant.nome_original[:200],
+                "nome_normalizado": restaurant.nome_normalizado,
+                "bairro": restaurant.bairro,
+                "cidade": restaurant.cidade,
+                "estado": restaurant.estado,
+                "categoria": restaurant.categoria,
+                "trecho_original": restaurant.trecho_original,
+                "confianca_extracao": round(restaurant.confianca_extracao, 3),
+                "alertas": list(restaurant.alertas),
+                "status_matching": StatusMatching.PENDENTE.value,
+            }
+            for index, restaurant in enumerate(candidatos)
+        ]
+        try:
+            inseridos = await self._supabase.insert_guia_itens(items=payload)
+        except ExternalServiceError as exc:
+            logger.warning(
+                "guias_ai.job.initial_insert_failed guia_id=%s reason=%s",
+                guia_id,
+                exc.message,
+            )
+            return {}
+
+        # PostgREST devolve na mesma ordem do envio. Como inserimos por ordem,
+        # o indice da lista de retorno casa com o indice do candidato.
+        ids: dict[int, str] = {}
+        for index, row in enumerate(inseridos):
+            if isinstance(row, dict) and row.get("id"):
+                ids[index] = str(row["id"])
+        logger.info(
+            "guias_ai.job.initial_items_inserted guia_id=%s total=%s",
+            guia_id,
+            len(ids),
+        )
+        return ids
+
+    async def _patch_item_enriquecido(
+        self,
+        *,
+        item_id: str | None,
+        item: EnrichedItem,
+    ) -> None:
+        if not item_id:
+            return
+        payload = self._build_item_update_payload(item)
+        try:
+            await self._supabase.update_guia_item(item_id=item_id, payload=payload)
+        except ExternalServiceError as exc:
+            logger.warning(
+                "guias_ai.job.patch_item_failed item_id=%s reason=%s",
+                item_id,
+                exc.message,
+            )
+
+    @staticmethod
+    def _aplicar_match_parcial(
+        enriched: EnrichedItem,
+        match: tuple[dict[str, Any] | None, float, StatusMatching],
+    ) -> EnrichedItem:
+        internal_lugar, _internal_score, internal_status = match
+        if internal_status == StatusMatching.POSSIVEL_DUPLICADO and internal_lugar:
+            enriched.lugar_id = internal_lugar.get("id")
+            enriched.lugar_existente = internal_lugar
+            if enriched.status_matching not in (
+                StatusMatching.NAO_ENCONTRADO,
+                StatusMatching.IGNORADO,
+            ):
+                enriched.status_matching = StatusMatching.POSSIVEL_DUPLICADO
+                if "possivel_duplicado_interno" not in enriched.alertas:
+                    enriched.alertas.append("possivel_duplicado_interno")
+        return enriched
+
+    @staticmethod
+    def _build_item_update_payload(item: EnrichedItem) -> dict[str, Any]:
+        return {
+            "lugar_id": item.lugar_id,
+            "place_id": item.place_id,
+            "endereco": item.endereco,
+            "latitude": item.latitude,
+            "longitude": item.longitude,
+            "google_maps_uri": item.google_maps_uri,
+            "telefone": item.telefone,
+            "site": item.site,
+            "rating": item.rating,
+            "total_avaliacoes": item.total_avaliacoes,
+            "preco_nivel": item.preco_nivel,
+            "foto_url": item.foto_url,
+            "foto_atribuicao": item.foto_atribuicao,
+            "status_negocio": item.status_negocio,
+            "horarios": item.horarios,
+            "status_matching": item.status_matching.value,
+            "score_matching": (
+                round(item.score_matching, 3) if item.score_matching else None
+            ),
+            "confianca_enriquecimento": round(item.confianca_enriquecimento, 3),
+            "alertas": [*item.extracted.alertas, *item.alertas],
+            "extra": {
+                "categorias_google": item.categorias_google,
+                "aberto_agora": item.aberto_agora,
+                "nome_oficial": item.nome_oficial,
             },
         }
 

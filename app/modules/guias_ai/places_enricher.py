@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, AsyncIterator
 
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
@@ -103,6 +103,57 @@ class PlacesEnricher:
             return_exceptions=False,
         )
         return list(results), counters["calls"], counters["photos"]
+
+    async def enriquecer_streaming(
+        self,
+        *,
+        extracted_items: list[tuple[int, ExtractedRestaurant]],
+        guide_cidade: str | None,
+        guide_categoria: str | None,
+        budget: int,
+    ) -> AsyncIterator[tuple[int, EnrichedItem, int, bool]]:
+        """Yield (index, enriched_item, calls_used, has_photo) as each task completes.
+
+        The job runner uses this to PATCH each `guia_itens` row independently,
+        so the user sees the cards filling in with photos/ratings/etc. as the
+        Google calls come back, instead of waiting for the whole batch.
+        """
+        if not extracted_items:
+            return
+
+        semaphore = asyncio.Semaphore(self._settings.guias_ai_places_concurrency)
+        counters = {"remaining": budget if budget >= 0 else 0}
+
+        async def task(index: int, item: ExtractedRestaurant) -> tuple[int, EnrichedItem, int, bool]:
+            async with semaphore:
+                if counters["remaining"] <= 0:
+                    enriched = EnrichedItem(
+                        extracted=item,
+                        status_matching=StatusMatching.PENDENTE,
+                        alertas=["limite_de_busca_atingido"],
+                    )
+                    return index, enriched, 0, False
+                outcome = await self._enrich_one(
+                    item=item,
+                    guide_cidade=guide_cidade,
+                    guide_categoria=guide_categoria,
+                )
+                counters["remaining"] -= outcome.calls
+                has_photo = bool(outcome.enriched.foto_url)
+                return index, outcome.enriched, outcome.calls, has_photo
+
+        pending = [
+            asyncio.create_task(task(index, item))
+            for index, item in extracted_items
+        ]
+        try:
+            for finished in asyncio.as_completed(pending):
+                yield await finished
+        except (asyncio.CancelledError, GeneratorExit):
+            for t in pending:
+                if not t.done():
+                    t.cancel()
+            raise
 
     async def _enrich_one(
         self,
