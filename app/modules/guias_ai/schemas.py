@@ -261,6 +261,24 @@ class GuiaIaItensReorderRequest(BaseModel):
     item_ids: list[str] = Field(..., min_length=1, max_length=200)
 
 
+class GuiaIaItemAssociacao(BaseModel):
+    item_id: str = Field(..., min_length=8, max_length=64)
+    lugar_id: str = Field(..., min_length=8, max_length=64)
+
+
+class GuiaIaItensBulkRequest(BaseModel):
+    confirmar: list[str] = Field(default_factory=list, max_length=200)
+    descartar: list[str] = Field(default_factory=list, max_length=200)
+    associar: list[GuiaIaItemAssociacao] = Field(default_factory=list, max_length=200)
+
+
+class GuiaIaItensBulkResponse(BaseModel):
+    confirmados: int = 0
+    removidos: int = 0
+    associados: int = 0
+    nao_encontrados: list[str] = Field(default_factory=list)
+
+
 class GuiaIaCapaUpdateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 

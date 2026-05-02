@@ -8,6 +8,8 @@ from app.modules.guias_ai.schemas import (
     GuiaIaCapaUpdateRequest,
     GuiaIaItemResponse,
     GuiaIaItemUpdateRequest,
+    GuiaIaItensBulkRequest,
+    GuiaIaItensBulkResponse,
     GuiaIaItensReorderRequest,
     GuiaIaMetadataUpdateRequest,
     GuiaIaResponse,
@@ -158,6 +160,19 @@ async def atualizar_item(
         item_id=item_id,
         request=request,
     )
+
+
+@router.patch(
+    "/{guia_id}/itens/bulk",
+    response_model=GuiaIaItensBulkResponse,
+    summary="Confirma, remove ou associa varios itens em uma so chamada",
+)
+async def acoes_em_lote(
+    request: GuiaIaItensBulkRequest,
+    guia_id: str = Path(..., min_length=8, max_length=64),
+    use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
+) -> GuiaIaItensBulkResponse:
+    return await use_case.acoes_em_lote(guia_id=guia_id, request=request)
 
 
 @router.delete(

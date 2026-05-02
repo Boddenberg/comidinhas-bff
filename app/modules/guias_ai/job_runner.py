@@ -230,6 +230,23 @@ class JobRunner:
         # Limita
         candidatos = candidatos[: self._settings.guias_ai_max_items_per_guide]
 
+        # 2.1 Cria o guia "esqueleto" cedo para que o frontend consiga
+        # abrir a pagina enquanto o pipeline ainda enriquece os itens.
+        guia_id_parcial = await self._criar_guia_esqueleto(
+            grupo_id=grupo_id,
+            extracted=extracted,
+            url_origem=url_origem,
+            titulo_sugerido=titulo_sugerido,
+            texto_hash_value=texto_hash_value,
+            classificacao=classificacao,
+            perfil_id=perfil_id,
+        )
+        if guia_id_parcial:
+            await self._supabase.update_guia_ai_job(
+                job_id=job_id,
+                payload={"guia_id": guia_id_parcial},
+            )
+
         # 3. Match interno
         await self._update_job_status(
             job_id=job_id,
@@ -317,6 +334,7 @@ class JobRunner:
             enriched_by_index[index] = enriched
 
         items_finais = [enriched_by_index[i] for i in range(len(candidatos))]
+        items_finais = self._deduplicar_por_place_id(items_finais)
 
         # 5. Capa
         await self._update_job_status(
@@ -379,17 +397,11 @@ class JobRunner:
             descricao_guia = descricao_guia[:500]
 
         guia_payload = {
-            "grupo_id": grupo_id,
             "nome": nome_guia,
             "descricao": descricao_guia,
             "lugar_ids": [
                 item.lugar_id for item in items_finais if item.lugar_id
             ],
-            "tipo_guia": "ia",
-            "fonte": extracted.fonte,
-            "autor": extracted.autor,
-            "url_origem": url_origem,
-            "data_publicacao": _safe_iso_datetime(extracted.data_publicacao),
             "categoria": extracted.categoria,
             "regiao": extracted.regiao,
             "cidade_principal": extracted.cidade_principal,
@@ -403,32 +415,52 @@ class JobRunner:
                 else "criado_com_pendencias"
             ),
             "qualidade_importacao": qualidade,
-            "hash_texto": texto_hash_value,
             "alertas": list({*alertas, *self._coletar_alertas(items_finais)}),
             "sugestoes": sugestoes.model_dump(),
-            "metadados": {
-                "tipo_detectado": classificacao.tipo.value,
-                "tipo_guia_detectado": extracted.tipo_guia_detectado,
-                "quantidade_esperada": extracted.quantidade_esperada,
-                "confianca_classificacao": classificacao.confianca,
-                "confianca_extracao": extracted.confianca,
-                "prompt_version": self._settings.guias_ai_prompt_version,
-                "perfil_id": perfil_id,
-                "url_origem": url_origem,
-            },
         }
 
-        try:
-            guia_criado = await self._supabase.insert_guia(payload=guia_payload)
-        except ExternalServiceError as exc:
-            logger.warning("guias_ai.job.create_guia_failed job_id=%s reason=%s", job_id, exc.message)
-            await self._fail(
-                job_id=job_id,
-                motivo="Falha ao gravar o guia no banco de dados.",
-            )
-            return
-
-        guia_id = str(guia_criado.get("id", ""))
+        guia_id = guia_id_parcial or ""
+        if not guia_id:
+            insert_payload = {
+                **guia_payload,
+                "grupo_id": grupo_id,
+                "tipo_guia": "ia",
+                "fonte": extracted.fonte,
+                "autor": extracted.autor,
+                "url_origem": url_origem,
+                "data_publicacao": _safe_iso_datetime(extracted.data_publicacao),
+                "hash_texto": texto_hash_value,
+                "metadados": {
+                    "tipo_detectado": classificacao.tipo.value,
+                    "tipo_guia_detectado": extracted.tipo_guia_detectado,
+                    "quantidade_esperada": extracted.quantidade_esperada,
+                    "confianca_classificacao": classificacao.confianca,
+                    "confianca_extracao": extracted.confianca,
+                    "prompt_version": self._settings.guias_ai_prompt_version,
+                    "perfil_id": perfil_id,
+                    "url_origem": url_origem,
+                },
+            }
+            try:
+                guia_criado = await self._supabase.insert_guia(payload=insert_payload)
+            except ExternalServiceError as exc:
+                logger.warning("guias_ai.job.create_guia_failed job_id=%s reason=%s", job_id, exc.message)
+                await self._fail(
+                    job_id=job_id,
+                    motivo="Falha ao gravar o guia no banco de dados.",
+                )
+                return
+            guia_id = str(guia_criado.get("id", ""))
+        else:
+            try:
+                await self._supabase.update_guia(guia_id=guia_id, payload=guia_payload)
+            except ExternalServiceError as exc:
+                logger.warning(
+                    "guias_ai.job.update_guia_failed job_id=%s reason=%s",
+                    job_id,
+                    exc.message,
+                )
+                alertas.append("falha_ao_atualizar_guia")
 
         itens_payload = [
             self._build_item_payload(guia_id=guia_id, ordem=index, item=item)
@@ -526,6 +558,94 @@ class JobRunner:
         if last_error:
             logger.warning("guias_ai.job.retry_exhausted etapa=%s", etapa)
         return None
+
+    async def _criar_guia_esqueleto(
+        self,
+        *,
+        grupo_id: str,
+        extracted: ExtractedGuide,
+        url_origem: Any,
+        titulo_sugerido: Any,
+        texto_hash_value: str,
+        classificacao,
+        perfil_id: str | None,
+    ) -> str | None:
+        nome_guia = (
+            extracted.titulo
+            or (titulo_sugerido if isinstance(titulo_sugerido, str) else None)
+            or f"Guia importado em {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')}"
+        )[:80]
+        descricao = extracted.descricao[:500] if isinstance(extracted.descricao, str) else None
+
+        payload = {
+            "grupo_id": grupo_id,
+            "nome": nome_guia,
+            "descricao": descricao,
+            "lugar_ids": [],
+            "tipo_guia": "ia",
+            "fonte": extracted.fonte,
+            "autor": extracted.autor,
+            "url_origem": url_origem,
+            "data_publicacao": _safe_iso_datetime(extracted.data_publicacao),
+            "categoria": extracted.categoria,
+            "regiao": extracted.regiao,
+            "cidade_principal": extracted.cidade_principal,
+            "total_itens": 0,
+            "status_importacao": "processando",
+            "qualidade_importacao": None,
+            "hash_texto": texto_hash_value,
+            "alertas": [],
+            "sugestoes": {},
+            "metadados": {
+                "tipo_detectado": classificacao.tipo.value,
+                "confianca_classificacao": classificacao.confianca,
+                "confianca_extracao": extracted.confianca,
+                "prompt_version": self._settings.guias_ai_prompt_version,
+                "perfil_id": perfil_id,
+                "url_origem": url_origem,
+                "construcao": "incremental",
+            },
+        }
+        try:
+            criado = await self._supabase.insert_guia(payload=payload)
+        except ExternalServiceError as exc:
+            logger.warning(
+                "guias_ai.job.create_skeleton_failed grupo_id=%s reason=%s",
+                grupo_id,
+                exc.message,
+            )
+            return None
+        guia_id = str(criado.get("id", "")) or None
+        if guia_id:
+            logger.info(
+                "guias_ai.job.skeleton_created grupo_id=%s guia_id=%s",
+                grupo_id,
+                guia_id,
+            )
+        return guia_id
+
+    @staticmethod
+    def _deduplicar_por_place_id(items: list[EnrichedItem]) -> list[EnrichedItem]:
+        seen: dict[str, int] = {}
+        for index, item in enumerate(items):
+            if not item.place_id:
+                continue
+            previous_index = seen.get(item.place_id)
+            if previous_index is None:
+                seen[item.place_id] = index
+                continue
+            previous = items[previous_index]
+            keep_index, drop_index = (
+                (previous_index, index)
+                if _ranking_key(previous) <= _ranking_key(item)
+                else (index, previous_index)
+            )
+            seen[item.place_id] = keep_index
+            dropped = items[drop_index]
+            dropped.status_matching = StatusMatching.IGNORADO
+            if "duplicado_no_guia" not in dropped.alertas:
+                dropped.alertas.append("duplicado_no_guia")
+        return items
 
     async def _coletar_membros_com_cidade(self, *, grupo_id: str) -> list[dict[str, Any]]:
         try:
@@ -720,6 +840,14 @@ class JobRunner:
                 return "O texto colado e curto demais para gerar um guia."
             case _:
                 return "Nao consegui criar um guia a partir desse texto."
+
+
+def _ranking_key(item: EnrichedItem) -> tuple[int, float]:
+    posicao = item.extracted.posicao_ranking
+    return (
+        posicao if posicao is not None else 9_999,
+        -float(item.score_matching or 0.0),
+    )
 
 
 def _safe_iso_datetime(value: str | None) -> str | None:

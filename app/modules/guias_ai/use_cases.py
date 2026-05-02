@@ -22,6 +22,8 @@ from app.modules.guias_ai.schemas import (
     GuiaIaCapaUpdateRequest,
     GuiaIaItemResponse,
     GuiaIaItemUpdateRequest,
+    GuiaIaItensBulkRequest,
+    GuiaIaItensBulkResponse,
     GuiaIaItensReorderRequest,
     GuiaIaMetadataUpdateRequest,
     GuiaIaResponse,
@@ -307,6 +309,7 @@ class GuiasAiUseCase:
             raise BadRequestError("Informe ao menos um campo para atualizar.")
 
         await self._supabase.update_guia(guia_id=guia_id, payload=payload)
+        await self._registrar_edicao(guia_id=guia_id, metadados_alterados=True)
         return await self.buscar_guia_ia(guia_id=guia_id)
 
     async def atualizar_capa(
@@ -336,7 +339,80 @@ class GuiasAiUseCase:
             guia_id=guia_id,
             payload={"imagem_capa": nova_capa},
         )
+        await self._registrar_edicao(guia_id=guia_id, capa_alterada=True)
         return await self.buscar_guia_ia(guia_id=guia_id)
+
+    async def acoes_em_lote(
+        self,
+        *,
+        guia_id: str,
+        request: GuiaIaItensBulkRequest,
+    ) -> GuiaIaItensBulkResponse:
+        guia = await self._supabase.get_guia(guia_id=guia_id)
+        if guia is None:
+            raise NotFoundError("Guia nao encontrado.")
+        grupo_id = str(guia.get("grupo_id", ""))
+
+        if not request.confirmar and not request.descartar and not request.associar:
+            raise BadRequestError(
+                "Informe ao menos uma acao em 'confirmar', 'descartar' ou 'associar'."
+            )
+
+        nao_encontrados: list[str] = []
+        confirmados = 0
+        removidos = 0
+        associados = 0
+
+        for item_id in request.confirmar:
+            item = await self._supabase.get_guia_item(item_id=item_id)
+            if item is None or str(item.get("guia_id")) != guia_id:
+                nao_encontrados.append(item_id)
+                continue
+            await self._supabase.update_guia_item(
+                item_id=item_id,
+                payload={"status_matching": StatusMatching.CONFIRMADO_USUARIO.value},
+            )
+            confirmados += 1
+
+        for item_id in request.descartar:
+            item = await self._supabase.get_guia_item(item_id=item_id)
+            if item is None or str(item.get("guia_id")) != guia_id:
+                nao_encontrados.append(item_id)
+                continue
+            await self._supabase.delete_guia_item(item_id=item_id)
+            removidos += 1
+
+        for assoc in request.associar:
+            item = await self._supabase.get_guia_item(item_id=assoc.item_id)
+            if item is None or str(item.get("guia_id")) != guia_id:
+                nao_encontrados.append(assoc.item_id)
+                continue
+            lugar = await self._supabase.get_lugar(
+                lugar_id=assoc.lugar_id,
+                select="id,grupo_id",
+            )
+            if lugar is None or str(lugar.get("grupo_id")) != grupo_id:
+                nao_encontrados.append(assoc.lugar_id)
+                continue
+            await self._supabase.update_guia_item(
+                item_id=assoc.item_id,
+                payload={
+                    "lugar_id": assoc.lugar_id,
+                    "status_matching": StatusMatching.CONFIRMADO_USUARIO.value,
+                },
+            )
+            associados += 1
+
+        if confirmados or removidos or associados:
+            await self._sincronizar_total_e_lugar_ids(guia_id=guia_id)
+            await self._registrar_edicao(guia_id=guia_id)
+
+        return GuiaIaItensBulkResponse(
+            confirmados=confirmados,
+            removidos=removidos,
+            associados=associados,
+            nao_encontrados=sorted(set(nao_encontrados)),
+        )
 
     async def remover_item(self, *, guia_id: str, item_id: str) -> GuiaIaResponse:
         item = await self._supabase.get_guia_item(item_id=item_id)
@@ -344,6 +420,7 @@ class GuiasAiUseCase:
             raise NotFoundError("Item de guia nao encontrado.")
         await self._supabase.delete_guia_item(item_id=item_id)
         await self._sincronizar_total_e_lugar_ids(guia_id=guia_id)
+        await self._registrar_edicao(guia_id=guia_id, item_removido=True)
         return await self.buscar_guia_ia(guia_id=guia_id)
 
     async def reordenar_itens(
@@ -417,10 +494,48 @@ class GuiasAiUseCase:
 
         await self._supabase.update_guia_item(item_id=item_id, payload=payload)
         await self._sincronizar_total_e_lugar_ids(guia_id=guia_id)
+        await self._registrar_edicao(guia_id=guia_id, item_editado=True)
         atualizado = await self._supabase.get_guia_item(item_id=item_id)
         if atualizado is None:
             raise NotFoundError("Item desapareceu apos a atualizacao.")
         return self._mapear_item(atualizado)
+
+    async def _registrar_edicao(
+        self,
+        *,
+        guia_id: str,
+        item_editado: bool = False,
+        item_removido: bool = False,
+        capa_alterada: bool = False,
+        metadados_alterados: bool = False,
+    ) -> None:
+        try:
+            guia = await self._supabase.get_guia(guia_id=guia_id)
+        except Exception:
+            logger.exception("guias_ai.metrics.guia_lookup_failed guia_id=%s", guia_id)
+            return
+        if guia is None:
+            return
+        metadados_raw = guia.get("metadados")
+        metadados = dict(metadados_raw) if isinstance(metadados_raw, dict) else {}
+        edicoes = dict(metadados.get("edicoes") or {})
+        if item_editado:
+            edicoes["itens_editados"] = int(edicoes.get("itens_editados") or 0) + 1
+        if item_removido:
+            edicoes["itens_removidos"] = int(edicoes.get("itens_removidos") or 0) + 1
+        if capa_alterada:
+            edicoes["capa_editada"] = int(edicoes.get("capa_editada") or 0) + 1
+        if metadados_alterados:
+            edicoes["metadados_editado"] = int(edicoes.get("metadados_editado") or 0) + 1
+        metadados["edicoes"] = edicoes
+        metadados["editado_em"] = datetime.now(timezone.utc).isoformat()
+        try:
+            await self._supabase.update_guia(
+                guia_id=guia_id,
+                payload={"metadados": metadados},
+            )
+        except Exception:
+            logger.exception("guias_ai.metrics.update_failed guia_id=%s", guia_id)
 
     async def _sincronizar_total_e_lugar_ids(self, *, guia_id: str) -> None:
         itens = await self._supabase.list_guia_itens(guia_id=guia_id)
