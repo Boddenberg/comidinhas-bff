@@ -1584,6 +1584,142 @@
       "parameters": [],
       "parentId": "fld_p_guias_ia",
       "url": "https://comidinhas-bff-production.up.railway.app/api/v1/guias/ia/{ guia_id }/itens/{ item_id }"
+    },
+    {
+      "_id": "req_l_guias_ia_cancel",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "POST",
+      "name": "Cancelar job",
+      "parameters": [],
+      "parentId": "fld_l_guias_ia",
+      "url": "http://localhost:8000/api/v1/guias/ia/imports/{ job_id }/cancelar"
+    },
+    {
+      "_id": "req_l_guias_ia_retry",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "POST",
+      "name": "Reexecutar job",
+      "parameters": [],
+      "parentId": "fld_l_guias_ia",
+      "url": "http://localhost:8000/api/v1/guias/ia/imports/{ job_id }/reexecutar"
+    },
+    {
+      "_id": "req_l_guias_ia_watchdog",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "POST",
+      "name": "Watchdog (jobs travados)",
+      "parameters": [],
+      "parentId": "fld_l_guias_ia",
+      "url": "http://localhost:8000/api/v1/guias/ia/imports/watchdog"
+    },
+    {
+      "_id": "req_l_guias_ia_stream",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "GET",
+      "name": "Stream do progresso (SSE)",
+      "parameters": [],
+      "parentId": "fld_l_guias_ia",
+      "url": "http://localhost:8000/api/v1/guias/ia/imports/{ job_id }/stream"
+    },
+    {
+      "_id": "req_l_guias_ia_bulk",
+      "_type": "request",
+      "authentication": {},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"confirmar\": [\n    \"{{ item_id_1 }}\",\n    \"{{ item_id_2 }}\"\n  ],\n  \"descartar\": [\n    \"{{ item_id_3 }}\"\n  ],\n  \"associar\": [\n    {\n      \"item_id\": \"{{ item_id_4 }}\",\n      \"lugar_id\": \"{{ lugar_id }}\"\n    }\n  ]\n}"
+      },
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "method": "PATCH",
+      "name": "Acoes em lote nos itens",
+      "parameters": [],
+      "parentId": "fld_l_guias_ia",
+      "url": "http://localhost:8000/api/v1/guias/ia/{ guia_id }/itens/bulk"
+    },
+    {
+      "_id": "req_p_guias_ia_cancel",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "POST",
+      "name": "Cancelar job",
+      "parameters": [],
+      "parentId": "fld_p_guias_ia",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/guias/ia/imports/{ job_id }/cancelar"
+    },
+    {
+      "_id": "req_p_guias_ia_retry",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "POST",
+      "name": "Reexecutar job",
+      "parameters": [],
+      "parentId": "fld_p_guias_ia",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/guias/ia/imports/{ job_id }/reexecutar"
+    },
+    {
+      "_id": "req_p_guias_ia_watchdog",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "POST",
+      "name": "Watchdog (jobs travados)",
+      "parameters": [],
+      "parentId": "fld_p_guias_ia",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/guias/ia/imports/watchdog"
+    },
+    {
+      "_id": "req_p_guias_ia_stream",
+      "_type": "request",
+      "authentication": {},
+      "body": {},
+      "headers": [],
+      "method": "GET",
+      "name": "Stream do progresso (SSE)",
+      "parameters": [],
+      "parentId": "fld_p_guias_ia",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/guias/ia/imports/{ job_id }/stream"
+    },
+    {
+      "_id": "req_p_guias_ia_bulk",
+      "_type": "request",
+      "authentication": {},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"confirmar\": [\n    \"{{ item_id_1 }}\",\n    \"{{ item_id_2 }}\"\n  ],\n  \"descartar\": [\n    \"{{ item_id_3 }}\"\n  ],\n  \"associar\": [\n    {\n      \"item_id\": \"{{ item_id_4 }}\",\n      \"lugar_id\": \"{{ lugar_id }}\"\n    }\n  ]\n}"
+      },
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "method": "PATCH",
+      "name": "Acoes em lote nos itens",
+      "parameters": [],
+      "parentId": "fld_p_guias_ia",
+      "url": "https://comidinhas-bff-production.up.railway.app/api/v1/guias/ia/{ guia_id }/itens/bulk"
     }
   ]
 }

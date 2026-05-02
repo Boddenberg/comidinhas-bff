@@ -189,13 +189,51 @@ e usa `places:searchText` com `FieldMask` enxuto para localizar candidatos e
 `places:photos` para a capa do guia. Nenhum dado sensivel do grupo e enviado
 ao Google.
 
+### Detalhes da arquitetura
+
+**Extracao por chunks com overlap.** Textos longos (rankings TOP 50/100) sao
+divididos em pedacos de ~12k chars com 1.5k de overlap e processados em
+paralelo. Itens duplicados na fronteira sao deduplicados por nome
+normalizado e place_id no merge.
+
+**Guia incremental.** O guia esqueleto e criado logo apos a extracao
+(antes do enriquecimento Google), entao o frontend pode navegar para a URL
+do guia enquanto os cards ainda estao chegando.
+
+**Auto-criacao de lugares.** Itens com match Google de alta confianca e
+`place_id` que ainda nao existem no banco do grupo viram `lugares`
+automaticamente, ja com status `quero_ir`. O usuario pode marcar
+favorito/quero_voltar/etc. imediatamente.
+
+**Cache em processo.** Buscas no Google Places sao cacheadas em memoria
+(TTL+LRU) para reduzir custo quando varios grupos importam textos
+similares. Configuravel por `GUIAS_AI_PLACES_CACHE_*`.
+
+**Maquina de estados resiliente.** Jobs tem `cancelled` como estado
+adicional, suporte a retry (`/reexecutar`) e watchdog para marcar como
+falhos os que ficaram parados (deploy no meio do processamento).
+Idempotencia por hash do texto: se o mesmo texto for enviado nas ultimas
+24h e ja virou guia, devolvemos o job antigo sem refazer.
+
+**Sugestoes mais inteligentes.** "Mais facil para todos" agora usa
+Haversine entre cada candidato e o centroide dos lugares ja salvos pelo
+grupo (dado proprio do grupo, sem expor membros). Se o grupo nao tiver
+lugares com lat/long, cai para o fallback por cidade.
+
+**Streaming.** A rota `/imports/{job_id}/stream` emite Server-Sent Events
+para o frontend atualizar a UI sem polling.
+
 ### Limitacoes da primeira versao
 
-- O calculo de "facilidade para o grupo" usa apenas a cidade salva no perfil
-  (nao integramos Google Routes API ainda). Quando enderecos por membro
-  forem suportados, basta evoluir o `SuggestionEngine`.
+- O calculo de proximidade usa o centroide dos lugares ja salvos pelo
+  grupo. Quando enderecos por membro forem suportados, basta evoluir
+  `SuggestionEngine` sem mexer em nada da pipeline.
 - O guia gerado por IA convive com guias manuais na mesma tabela `guias`
   (`tipo_guia = 'ia'`). Os itens ricos ficam em `guia_itens`.
+- Watchdog precisa ser disparado externamente (cron ou hit manual em
+  `POST /api/v1/guias/ia/imports/watchdog`); nao roda sozinho.
+- Cache de Places e in-process (perde-se em cada deploy). Para volume alto
+  vale promover para Redis depois.
 - Sem testes automatizados nesta etapa (por escolha de escopo).
 
 ## Setup no Supabase
@@ -206,12 +244,16 @@ Rode o SQL de [supabase/schema.sql](supabase/schema.sql) no SQL Editor do Supaba
 
 Se o banco no-auth ja existe, rode tambem [supabase/group_join_requests_setup.sql](supabase/group_join_requests_setup.sql) para adicionar codigo curto de grupo, foto do grupo e solicitacoes de entrada sem dropar dados.
 
-Para habilitar a feature "Criar guia com IA", aplique tambem
-[supabase/migrations/20260502120000_ai_guides.sql](supabase/migrations/20260502120000_ai_guides.sql).
-A migracao e 100% aditiva: adiciona colunas opcionais a `public.guias`
-(metadados de importacao, capa, sugestoes), cria `public.guia_itens`
-(dados ricos por item) e `public.guia_ai_jobs` (a maquina de estados do
-processamento). Nada e removido, nada quebra os guias manuais existentes.
+Para habilitar a feature "Criar guia com IA", aplique nesta ordem:
+
+1. [supabase/migrations/20260502120000_ai_guides.sql](supabase/migrations/20260502120000_ai_guides.sql)
+   — colunas aditivas em `guias`, novas tabelas `guia_itens` e `guia_ai_jobs`.
+2. [supabase/migrations/20260502130000_ai_guides_v2.sql](supabase/migrations/20260502130000_ai_guides_v2.sql)
+   — estado `cancelled`, coluna `parent_job_id` (retry) e indice util pro
+   watchdog detectar jobs travados.
+
+Ambas sao 100% aditivas: nada e removido e os guias manuais existentes
+continuam funcionando sem alteracao.
 
 O fluxo principal fica:
 
@@ -242,6 +284,11 @@ O fluxo principal fica:
 - `PATCH /api/v1/guias/ia/{guia_id}/itens/reordenar` reordena os itens do guia.
 - `PATCH /api/v1/guias/ia/{guia_id}/itens/{item_id}` edita um item (associar lugar, status, foto).
 - `DELETE /api/v1/guias/ia/{guia_id}/itens/{item_id}` remove um item do guia.
+- `PATCH /api/v1/guias/ia/{guia_id}/itens/bulk` confirma, descarta ou associa varios itens em uma so chamada.
+- `POST /api/v1/guias/ia/imports/{job_id}/cancelar` cancela um job em andamento.
+- `POST /api/v1/guias/ia/imports/{job_id}/reexecutar` reprocessa um job cancelado/falho.
+- `POST /api/v1/guias/ia/imports/watchdog` marca como `failed` jobs travados sem atualizacao.
+- `GET /api/v1/guias/ia/imports/{job_id}/stream` recebe o progresso por Server-Sent Events.
 - `POST /api/v1/ia/decidir-restaurante` escolhe restaurante com IA por escopo: `todos`, `favoritos`, `quero_ir` ou `guia`.
 - `POST /api/v1/ia/recomendar-restaurantes` interpreta uma mensagem livre, busca no Supabase e no Google Places, e retorna opcoes estruturadas para o front.
 - `GET /api/v1/home/?grupo_id=...` retorna o agregado do contexto selecionado.
