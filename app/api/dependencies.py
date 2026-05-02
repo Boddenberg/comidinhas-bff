@@ -18,6 +18,7 @@ from app.modules.google_places.use_cases import (
     SearchNearbyRestaurantsUseCase,
 )
 from app.modules.guias.use_cases import ManageGuiasUseCase
+from app.modules.guias_ai.use_cases import GuiasAiUseCase
 from app.modules.grupos.use_cases import ManageGruposUseCase
 from app.modules.perfis.use_cases import ManagePerfisUseCase
 from app.modules.groups.use_cases import ManageGroupsUseCase
@@ -197,6 +198,20 @@ def get_manage_guias_use_case(
     client: SupabaseClient = Depends(get_supabase_client),
 ) -> ManageGuiasUseCase:
     return ManageGuiasUseCase(client=client)
+
+
+def get_guias_ai_use_case(
+    supabase_client: SupabaseClient = Depends(get_supabase_client),
+    openai_client: OpenAIClient = Depends(get_openai_client),
+    google_client: GooglePlacesClient = Depends(get_google_places_client),
+    settings: Settings = Depends(get_app_settings),
+) -> GuiasAiUseCase:
+    return GuiasAiUseCase(
+        settings=settings,
+        supabase_client=supabase_client,
+        openai_client=openai_client,
+        google_places_client=google_client,
+    )
 
 
 def get_save_from_google_use_case(
