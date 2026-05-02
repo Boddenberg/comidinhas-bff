@@ -129,6 +129,75 @@ python main.py
 pytest
 ```
 
+## Criar guia com IA
+
+A feature "Criar guia com IA" permite que o usuario cole um texto desestruturado
+copiado da internet (ranking, materia, lista, guia gastronomico) e o backend
+monte um guia completo dentro do Comidinhas, com restaurantes, fotos, dados do
+Google Maps, sugestoes para o grupo e pendencias claras de revisao opcional.
+
+### Como funciona
+
+1. O frontend chama `POST /api/v1/guias/ia/imports` com o texto e recebe
+   imediatamente um `job_id` (HTTP 202). Nada bloqueia o request.
+2. O backend executa o pipeline em segundo plano (asyncio task), atualizando
+   o estado do job a cada etapa: `sanitizing_text`, `classifying_content`,
+   `extracting_guide_metadata`, `extracting_restaurants`,
+   `matching_internal_restaurants`, `searching_google_places`,
+   `enriching_places`, `selecting_photos`, `calculating_group_suggestions`,
+   `creating_guide`, `completed` ou `completed_with_warnings`.
+3. O frontend faz polling em `GET /api/v1/guias/ia/imports/{job_id}` para
+   exibir progresso ("Lendo o texto", "Identificando restaurantes", etc.).
+4. Quando o job termina, `guia_id` aparece no payload do job e o app abre
+   o guia via `GET /api/v1/guias/ia/{guia_id}`.
+
+### Resiliencia
+
+- Cada etapa tem retry com backoff e nao morre por timeout de request.
+- Falhas parciais (ex: 3 itens nao acharam Place ID) NAO abortam a importacao.
+  O guia e criado com pendencias e o usuario pode resolver depois.
+- Se o LLM falhar, o extractor cai em um parser deterministico.
+- Se o Google Maps falhar/atingir limite, os itens ficam com status
+  `nao_encontrado`/`pendente` e o guia segue.
+- Textos nao gastronomicos (receita, review individual, conteudo nao
+  relacionado a comida) terminam com status `invalid_content` e mensagem
+  amigavel ao usuario.
+
+### Privacidade nas sugestoes
+
+As sugestoes do guia ("Melhor para hoje", "Mais facil para todos", etc.)
+usam apenas a `cidade` salva no perfil dos membros do grupo. Nenhum endereco
+individual e exposto a outros membros nem enviado para o LLM. Toda explicacao
+e agregada ("tempo medio de deslocamento baixo para o grupo"), nunca
+"fica perto da casa do Fulano".
+
+### Variaveis de ambiente da feature
+
+- `GUIAS_AI_ENABLED` (default `true`)
+- `GUIAS_AI_CLASSIFIER_MODEL` / `GUIAS_AI_EXTRACTOR_MODEL` (default `gpt-4o-mini`)
+- `GUIAS_AI_TEXT_MIN_CHARS` / `GUIAS_AI_TEXT_MAX_CHARS`
+- `GUIAS_AI_MAX_ITEMS_PER_GUIDE` / `GUIAS_AI_MIN_ITEMS_TO_CREATE_GUIDE`
+- `GUIAS_AI_MAX_PLACES_LOOKUPS_PER_JOB` / `GUIAS_AI_PLACES_CONCURRENCY`
+- `GUIAS_AI_MATCH_STRONG_SCORE` / `GUIAS_AI_MATCH_WEAK_SCORE`
+- `GUIAS_AI_STEP_MAX_ATTEMPTS` / `GUIAS_AI_JOB_MAX_SECONDS`
+- `OPENAI_API_KEY` (obrigatorio) e `GOOGLE_MAPS_API_KEY` (recomendado).
+
+### APIs do Google usadas
+
+A feature reutiliza o cliente existente em `app/integrations/google_places`
+e usa `places:searchText` com `FieldMask` enxuto para localizar candidatos e
+`places:photos` para a capa do guia. Nenhum dado sensivel do grupo e enviado
+ao Google.
+
+### Limitacoes da primeira versao
+
+- O calculo de "facilidade para o grupo" usa apenas a cidade salva no perfil
+  (nao integramos Google Routes API ainda). Quando enderecos por membro
+  forem suportados, basta evoluir o `SuggestionEngine`.
+- O guia gerado por IA convive com guias manuais na mesma tabela `guias`
+  (`tipo_guia = 'ia'`). Os itens ricos ficam em `guia_itens`.
+- Sem testes automatizados nesta etapa (por escolha de escopo).
+
 ## Setup no Supabase
 
 ### Fluxo no-auth atual
@@ -136,6 +205,13 @@ pytest
 Rode o SQL de [supabase/schema.sql](supabase/schema.sql) no SQL Editor do Supabase. Ele cria `public.perfis`, `public.grupos`, `public.lugares` e `public.guias` sem depender de Supabase Auth.
 
 Se o banco no-auth ja existe, rode tambem [supabase/group_join_requests_setup.sql](supabase/group_join_requests_setup.sql) para adicionar codigo curto de grupo, foto do grupo e solicitacoes de entrada sem dropar dados.
+
+Para habilitar a feature "Criar guia com IA", aplique tambem
+[supabase/migrations/20260502120000_ai_guides.sql](supabase/migrations/20260502120000_ai_guides.sql).
+A migracao e 100% aditiva: adiciona colunas opcionais a `public.guias`
+(metadados de importacao, capa, sugestoes), cria `public.guia_itens`
+(dados ricos por item) e `public.guia_ai_jobs` (a maquina de estados do
+processamento). Nada e removido, nada quebra os guias manuais existentes.
 
 O fluxo principal fica:
 
@@ -158,6 +234,14 @@ O fluxo principal fica:
 - `POST /api/v1/guias/` cria um guia com nome, descricao e `lugar_ids`.
 - `POST /api/v1/guias/{guia_id}/lugares` adiciona restaurante ao guia.
 - `PATCH /api/v1/guias/{guia_id}/lugares/reordenar` reordena restaurantes do guia.
+- `POST /api/v1/guias/ia/imports` cria um job de importacao "Criar guia com IA" a partir de um texto colado e retorna `job_id` (HTTP 202).
+- `GET /api/v1/guias/ia/imports/{job_id}` consulta o progresso e estado final do job.
+- `GET /api/v1/guias/ia/{guia_id}` retorna o guia gerado por IA com itens enriquecidos, sugestoes e metadados.
+- `PATCH /api/v1/guias/ia/{guia_id}` edita nome, descricao, categoria, regiao e cidade principal.
+- `PATCH /api/v1/guias/ia/{guia_id}/capa` troca a imagem de capa (URL livre ou foto de um item).
+- `PATCH /api/v1/guias/ia/{guia_id}/itens/reordenar` reordena os itens do guia.
+- `PATCH /api/v1/guias/ia/{guia_id}/itens/{item_id}` edita um item (associar lugar, status, foto).
+- `DELETE /api/v1/guias/ia/{guia_id}/itens/{item_id}` remove um item do guia.
 - `POST /api/v1/ia/decidir-restaurante` escolhe restaurante com IA por escopo: `todos`, `favoritos`, `quero_ir` ou `guia`.
 - `POST /api/v1/ia/recomendar-restaurantes` interpreta uma mensagem livre, busca no Supabase e no Google Places, e retorna opcoes estruturadas para o front.
 - `GET /api/v1/home/?grupo_id=...` retorna o agregado do contexto selecionado.
