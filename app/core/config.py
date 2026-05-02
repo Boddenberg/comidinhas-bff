@@ -54,6 +54,23 @@ class Settings(BaseSettings):
     google_places_photo_max_height: int = Field(default=400, ge=1, le=4800)
     google_places_max_photos_per_place: int = Field(default=10, ge=1, le=10)
 
+    guias_ai_enabled: bool = True
+    guias_ai_chat_model: str = "gpt-4o-mini"
+    guias_ai_classifier_model: str = "gpt-4o-mini"
+    guias_ai_extractor_model: str = "gpt-4o-mini"
+    guias_ai_text_min_chars: int = Field(default=80, ge=10, le=10_000)
+    guias_ai_text_max_chars: int = Field(default=80_000, ge=1_000, le=400_000)
+    guias_ai_max_items_per_guide: int = Field(default=80, ge=1, le=200)
+    guias_ai_min_items_to_create_guide: int = Field(default=3, ge=1, le=50)
+    guias_ai_max_places_lookups_per_job: int = Field(default=80, ge=0, le=300)
+    guias_ai_places_concurrency: int = Field(default=4, ge=1, le=16)
+    guias_ai_classifier_min_confidence: float = Field(default=0.4, ge=0.0, le=1.0)
+    guias_ai_match_strong_score: float = Field(default=0.82, ge=0.0, le=1.0)
+    guias_ai_match_weak_score: float = Field(default=0.55, ge=0.0, le=1.0)
+    guias_ai_step_max_attempts: int = Field(default=3, ge=1, le=8)
+    guias_ai_job_max_seconds: int = Field(default=900, ge=30, le=3600)
+    guias_ai_prompt_version: str = "1.0.0"
+
     supabase_url: str | None = None
     supabase_key: str | None = None
     supabase_service_role_key: str | None = None
