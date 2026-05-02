@@ -12,6 +12,7 @@ from app.modules.google_places.schemas import (
     NearbyRestaurant,
     TextSearchRestaurantsRequest,
 )
+from app.modules.guias_ai.places_cache import TTLCache, normalize_query_key
 from app.modules.guias_ai.sanitizer import normalizar_nome
 from app.modules.guias_ai.schemas import (
     EnrichedItem,
@@ -49,9 +50,14 @@ class PlacesEnricher:
         *,
         client: GooglePlacesClient,
         settings: Settings,
+        cache: TTLCache[list[NearbyRestaurant]] | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
+        self._cache = cache or TTLCache(
+            max_entries=settings.guias_ai_places_cache_max_entries,
+            ttl_seconds=settings.guias_ai_places_cache_ttl_seconds,
+        )
 
     async def enriquecer_lote(
         self,
@@ -125,26 +131,32 @@ class PlacesEnricher:
         best_score = 0.0
 
         for query in queries:
-            calls += 1
-            try:
-                candidates = await self._client.search_text_restaurants(
-                    TextSearchRestaurantsRequest(
-                        text_query=query,
-                        page_size=5,
-                        included_type="restaurant",
-                        strict_type_filtering=False,
+            cache_key = normalize_query_key(query)
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                candidates = cached
+            else:
+                calls += 1
+                try:
+                    candidates = await self._client.search_text_restaurants(
+                        TextSearchRestaurantsRequest(
+                            text_query=query,
+                            page_size=5,
+                            included_type="restaurant",
+                            strict_type_filtering=False,
+                        )
                     )
-                )
-            except ExternalServiceError as exc:
-                logger.warning(
-                    "guias_ai.places_enricher.search_failed query=%s reason=%s",
-                    query,
-                    exc.message,
-                )
-                continue
-            except Exception:  # pragma: no cover - defensivo
-                logger.exception("guias_ai.places_enricher.search_unexpected query=%s", query)
-                continue
+                except ExternalServiceError as exc:
+                    logger.warning(
+                        "guias_ai.places_enricher.search_failed query=%s reason=%s",
+                        query,
+                        exc.message,
+                    )
+                    continue
+                except Exception:  # pragma: no cover - defensivo
+                    logger.exception("guias_ai.places_enricher.search_unexpected query=%s", query)
+                    continue
+                self._cache.set(cache_key, candidates)
 
             candidate, score = self._best_candidate(item, candidates)
             if candidate and score > best_score:
