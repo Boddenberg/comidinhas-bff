@@ -16,7 +16,11 @@ from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
 from app.modules.guias_ai.job_runner import JobRunner
-from app.modules.guias_ai.sanitizer import hash_texto, normalizar_texto
+from app.modules.guias_ai.sanitizer import (
+    hash_texto,
+    normalizar_texto,
+    redigir_prompt_injection,
+)
 from app.modules.guias_ai.schemas import (
     CriarGuiaIaRequest,
     GuiaIaCapaUpdateRequest,
@@ -86,6 +90,19 @@ class GuiasAiUseCase:
                 "O texto colado ultrapassa o limite maximo permitido."
             )
 
+        # Antes de persistir o texto bruto, redige tentativas obvias de prompt
+        # injection e trunca pra economizar espaco em jobs que nunca serao
+        # rodados de novo. O texto_hash ja foi calculado sobre o texto cru.
+        texto_persistido, redigidos = redigir_prompt_injection(
+            texto_limpo[: self._settings.guias_ai_text_max_chars]
+        )
+        if redigidos:
+            logger.info(
+                "guias_ai.job.injection_redacted grupo_id=%s ocorrencias=%s",
+                request.grupo_id,
+                redigidos,
+            )
+
         await self._enforce_rate_limit(grupo_id=request.grupo_id)
 
         texto_hash_value = hash_texto(texto_limpo[: self._settings.guias_ai_text_max_chars])
@@ -112,7 +129,7 @@ class GuiasAiUseCase:
             "status": JobStatus.CREATED.value,
             "etapa_atual": JOB_USER_LABEL[JobStatus.CREATED],
             "progresso_percentual": JOB_PROGRESS[JobStatus.CREATED],
-            "texto_original": texto_limpo,
+            "texto_original": texto_persistido,
             "texto_hash": texto_hash_value,
             "url_origem": request.url_origem,
             "resultado": (

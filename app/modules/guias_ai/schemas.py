@@ -110,12 +110,24 @@ class CriarGuiaIaRequest(BaseModel):
     titulo_sugerido: str | None = Field(default=None, max_length=200)
     url_origem: str | None = Field(default=None, max_length=1000)
 
-    @field_validator("perfil_id", "titulo_sugerido", "url_origem", mode="before")
+    @field_validator("perfil_id", "titulo_sugerido", mode="before")
     @classmethod
     def vazio_para_none(cls, value: str | None) -> str | None:
         if isinstance(value, str):
             return value.strip() or None
         return value
+
+    @field_validator("url_origem", mode="before")
+    @classmethod
+    def validar_url(cls, value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+            raise ValueError("url_origem deve comecar com http:// ou https://")
+        return cleaned
 
 
 class JobEtapaProgresso(BaseModel):

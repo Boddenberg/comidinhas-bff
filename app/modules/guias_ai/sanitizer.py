@@ -22,6 +22,19 @@ _PROMPT_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)fa(?:c|c{1})a o (?:role|papel) de"),
 )
 
+_INJECTION_PLACEHOLDER = "[trecho_removido]"
+
+
+def redigir_prompt_injection(texto: str) -> tuple[str, int]:
+    if not texto:
+        return texto, 0
+    cleaned = texto
+    total = 0
+    for pattern in _PROMPT_INJECTION_PATTERNS:
+        cleaned, n = pattern.subn(_INJECTION_PLACEHOLDER, cleaned)
+        total += n
+    return cleaned, total
+
 
 def normalizar_texto(texto: str) -> str:
     if not texto:
