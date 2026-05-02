@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path, Query
+from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import get_guias_ai_use_case
 from app.modules.guias_ai.schemas import (
@@ -43,6 +44,31 @@ async def status_import(
     use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
 ) -> JobResponse:
     return await use_case.status_job(job_id=job_id)
+
+
+@router.get(
+    "/imports/{job_id}/stream",
+    summary="Stream Server-Sent Events com o progresso do job",
+    response_class=StreamingResponse,
+)
+async def stream_import(
+    job_id: str = Path(..., min_length=8, max_length=64),
+    use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
+) -> StreamingResponse:
+    async def event_stream():
+        async for snapshot in use_case.stream_job(job_id=job_id):
+            payload = snapshot.model_dump_json()
+            yield f"event: progresso\ndata: {payload}\n\n"
+        yield "event: end\ndata: {}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(

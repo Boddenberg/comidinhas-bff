@@ -170,6 +170,43 @@ class GuiasAiUseCase:
             raise NotFoundError("Job de importacao nao encontrado.")
         return self._mapear_job(raw)
 
+    async def stream_job(self, *, job_id: str):
+        """Async generator yielding job snapshots until terminal state.
+
+        Used by the SSE endpoint. Emits a snapshot whenever progress, status
+        or message changes, plus a heartbeat to keep proxies alive.
+        """
+        max_seconds = self._settings.guias_ai_stream_max_seconds
+        poll_seconds = self._settings.guias_ai_stream_poll_seconds
+        deadline = asyncio.get_event_loop().time() + max_seconds
+        last_signature: tuple[Any, ...] | None = None
+        last_emit = 0.0
+
+        # Garante que o job existe antes de comecar a streamar.
+        first = await self.status_job(job_id=job_id)
+        yield first
+        last_signature = (first.status, first.progresso_percentual, first.mensagem_usuario)
+
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                current = await self.status_job(job_id=job_id)
+            except NotFoundError:
+                return
+            signature = (
+                current.status,
+                current.progresso_percentual,
+                current.mensagem_usuario,
+                current.guia_id,
+            )
+            now = asyncio.get_event_loop().time()
+            if signature != last_signature or (now - last_emit) >= 15:
+                yield current
+                last_signature = signature
+                last_emit = now
+            if current.status in TERMINAL_JOB_STATUSES:
+                return
+            await asyncio.sleep(poll_seconds)
+
     async def cancelar_job(self, *, job_id: str) -> JobResponse:
         raw = await self._supabase.get_guia_ai_job(job_id=job_id)
         if raw is None:
