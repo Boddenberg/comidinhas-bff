@@ -57,6 +57,11 @@ class InternalMatcher:
                     "imagem_capa": row.get("imagem_capa"),
                     "place_id": place_id,
                     "extra": extra,
+                    # Latitude/longitude vivem em `extra` quando o lugar foi salvo
+                    # via integracao Google. Manter aqui simplifica calculos de
+                    # centroide na engine de sugestoes sem expor pra fora do BFF.
+                    "latitude": extra.get("latitude") if isinstance(extra, dict) else None,
+                    "longitude": extra.get("longitude") if isinstance(extra, dict) else None,
                 }
             )
         logger.info(

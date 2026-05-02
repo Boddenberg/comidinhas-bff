@@ -336,6 +336,15 @@ class JobRunner:
         items_finais = [enriched_by_index[i] for i in range(len(candidatos))]
         items_finais = self._deduplicar_por_place_id(items_finais)
 
+        # 4.1 Cria lugares para os matches Google de alta confianca
+        # que ainda nao existem no banco interno do grupo.
+        if self._settings.guias_ai_auto_create_lugares:
+            await self._auto_criar_lugares(
+                grupo_id=grupo_id,
+                items=items_finais,
+                inventario=inventario,
+            )
+
         # 5. Capa
         await self._update_job_status(
             job_id=job_id,
@@ -351,7 +360,11 @@ class JobRunner:
             mensagem="Calculando sugestoes.",
         )
         membros = await self._coletar_membros_com_cidade(grupo_id=grupo_id)
-        sugestoes = self._suggestion_engine.calcular(items=items_finais, membros=membros)
+        sugestoes = self._suggestion_engine.calcular(
+            items=items_finais,
+            membros=membros,
+            inventario_grupo=inventario,
+        )
 
         # 7. Persistencia: cria guia + itens + atualiza ranks
         await self._update_job_status(
@@ -623,6 +636,102 @@ class JobRunner:
                 guia_id,
             )
         return guia_id
+
+    async def _auto_criar_lugares(
+        self,
+        *,
+        grupo_id: str,
+        items: list[EnrichedItem],
+        inventario: list[dict[str, Any]],
+    ) -> None:
+        existing_place_ids = {
+            str(lugar.get("place_id"))
+            for lugar in inventario
+            if isinstance(lugar, dict) and lugar.get("place_id")
+        }
+        min_score = self._settings.guias_ai_auto_create_min_score
+
+        for item in items:
+            if item.lugar_id:
+                continue
+            if not item.place_id or item.place_id in existing_place_ids:
+                continue
+            if item.status_matching not in (
+                StatusMatching.ENCONTRADO_GOOGLE,
+                StatusMatching.BAIXA_CONFIANCA,
+            ):
+                continue
+            if (item.confianca_enriquecimento or 0.0) < min_score:
+                continue
+            if (item.score_matching or 0.0) < min_score:
+                continue
+
+            payload = self._build_lugar_payload(
+                grupo_id=grupo_id,
+                item=item,
+            )
+            try:
+                criado = await self._supabase.insert_lugar(payload=payload)
+            except ExternalServiceError as exc:
+                logger.warning(
+                    "guias_ai.auto_create_lugar.failed nome=%s reason=%s",
+                    item.nome_oficial or item.extracted.nome_original,
+                    exc.message,
+                )
+                continue
+            if not isinstance(criado, dict):
+                continue
+            new_id = str(criado.get("id", ""))
+            if not new_id:
+                continue
+            item.lugar_id = new_id
+            item.lugar_existente = criado
+            item.status_matching = StatusMatching.CRIADO_AUTOMATICAMENTE
+            existing_place_ids.add(item.place_id)
+            logger.info(
+                "guias_ai.auto_create_lugar.created grupo_id=%s lugar_id=%s place_id=%s",
+                grupo_id,
+                new_id,
+                item.place_id,
+            )
+
+    @staticmethod
+    def _build_lugar_payload(
+        *,
+        grupo_id: str,
+        item: EnrichedItem,
+    ) -> dict[str, Any]:
+        nome = (item.nome_oficial or item.extracted.nome_original)[:120]
+        return {
+            "grupo_id": grupo_id,
+            "nome": nome,
+            "categoria": item.extracted.categoria or item.categorias_google[0]
+            if item.categorias_google
+            else item.extracted.categoria,
+            "bairro": (item.bairro_normalizado or item.extracted.bairro),
+            "cidade": (item.cidade_normalizada or item.extracted.cidade),
+            "link": item.google_maps_uri,
+            "status": "quero_ir",
+            "favorito": False,
+            "imagem_capa": item.foto_url,
+            "fotos": [],
+            "extra": {
+                "google_place_id": item.place_id,
+                "place_id": item.place_id,
+                "google_maps_uri": item.google_maps_uri,
+                "telefone": item.telefone,
+                "site": item.site,
+                "rating": item.rating,
+                "total_avaliacoes": item.total_avaliacoes,
+                "preco_nivel": item.preco_nivel,
+                "latitude": item.latitude,
+                "longitude": item.longitude,
+                "status_negocio": item.status_negocio,
+                "categorias_google": item.categorias_google,
+                "fonte": "guias_ai_auto",
+                "criado_em_iso": datetime.now(timezone.utc).isoformat(),
+            },
+        }
 
     @staticmethod
     def _deduplicar_por_place_id(items: list[EnrichedItem]) -> list[EnrichedItem]:
