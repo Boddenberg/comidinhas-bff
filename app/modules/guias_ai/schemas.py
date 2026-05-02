@@ -23,6 +23,7 @@ class JobStatus(str, Enum):
     COMPLETED_WITH_WARNINGS = "completed_with_warnings"
     INVALID_CONTENT = "invalid_content"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 JOB_PROGRESS: dict[JobStatus, int] = {
@@ -41,7 +42,19 @@ JOB_PROGRESS: dict[JobStatus, int] = {
     JobStatus.COMPLETED_WITH_WARNINGS: 100,
     JobStatus.INVALID_CONTENT: 100,
     JobStatus.FAILED: 100,
+    JobStatus.CANCELLED: 100,
 }
+
+
+TERMINAL_JOB_STATUSES: frozenset[JobStatus] = frozenset(
+    {
+        JobStatus.COMPLETED,
+        JobStatus.COMPLETED_WITH_WARNINGS,
+        JobStatus.INVALID_CONTENT,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+    }
+)
 
 
 JOB_USER_LABEL: dict[JobStatus, str] = {
@@ -60,6 +73,7 @@ JOB_USER_LABEL: dict[JobStatus, str] = {
     JobStatus.COMPLETED_WITH_WARNINGS: "Guia criado com pendencias",
     JobStatus.INVALID_CONTENT: "Conteudo invalido",
     JobStatus.FAILED: "Falhou",
+    JobStatus.CANCELLED: "Cancelado",
 }
 
 

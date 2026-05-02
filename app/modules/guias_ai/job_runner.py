@@ -43,6 +43,10 @@ _INVALID_TYPES = {
 }
 
 
+class _JobCancelled(Exception):
+    """Raised internally to short-circuit pipeline when user cancels the job."""
+
+
 class JobRunner:
     """Orchestrates the AI guide creation pipeline against a persisted job row.
 
@@ -82,6 +86,8 @@ class JobRunner:
                 job_id=job_id,
                 motivo="O processamento ultrapassou o tempo maximo permitido.",
             )
+        except _JobCancelled:
+            logger.info("guias_ai.job.cancel_observed job_id=%s", job_id)
         except Exception as exc:  # pragma: no cover - last-resort safety net
             logger.exception("guias_ai.job.unhandled job_id=%s", job_id)
             await self._fail(
@@ -561,6 +567,9 @@ class JobRunner:
         mensagem: str | None = None,
         iniciado_em: str | None = None,
     ) -> None:
+        if await self._is_cancelled(job_id=job_id):
+            raise _JobCancelled()
+
         payload: dict[str, Any] = {
             "status": status.value,
             "etapa_atual": JOB_USER_LABEL.get(status, status.value),
@@ -571,6 +580,15 @@ class JobRunner:
         if iniciado_em:
             payload["iniciado_em"] = iniciado_em
         await self._supabase.update_guia_ai_job(job_id=job_id, payload=payload)
+
+    async def _is_cancelled(self, *, job_id: str) -> bool:
+        try:
+            current = await self._supabase.get_guia_ai_job(job_id=job_id)
+        except Exception:
+            return False
+        if not isinstance(current, dict):
+            return False
+        return str(current.get("status") or "") == JobStatus.CANCELLED.value
 
     async def _invalid(
         self,

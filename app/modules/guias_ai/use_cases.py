@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.config import Settings
-from app.core.errors import BadRequestError, ConfigurationError, NotFoundError
+from app.core.errors import (
+    BadRequestError,
+    ConfigurationError,
+    ConflictError,
+    NotFoundError,
+)
 from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
@@ -27,6 +32,7 @@ from app.modules.guias_ai.schemas import (
     JobResumoEstatisticas,
     JobStatus,
     StatusMatching,
+    TERMINAL_JOB_STATUSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,11 +84,25 @@ class GuiasAiUseCase:
                 "O texto colado ultrapassa o limite maximo permitido."
             )
 
+        await self._enforce_rate_limit(grupo_id=request.grupo_id)
+
         texto_hash_value = hash_texto(texto_limpo[: self._settings.guias_ai_text_max_chars])
         existente = await self._supabase.get_guia_ai_job_by_hash(
             grupo_id=request.grupo_id,
             texto_hash=texto_hash_value,
         )
+
+        if (
+            existente
+            and existente.get("guia_id")
+            and self._is_recent(existente.get("criado_em"))
+        ):
+            logger.info(
+                "guias_ai.job.idempotent_hit grupo_id=%s reused_job_id=%s",
+                request.grupo_id,
+                existente.get("id"),
+            )
+            return self._mapear_job(existente)
 
         payload: dict[str, Any] = {
             "grupo_id": request.grupo_id,
@@ -130,6 +150,119 @@ class GuiasAiUseCase:
         if raw is None:
             raise NotFoundError("Job de importacao nao encontrado.")
         return self._mapear_job(raw)
+
+    async def cancelar_job(self, *, job_id: str) -> JobResponse:
+        raw = await self._supabase.get_guia_ai_job(job_id=job_id)
+        if raw is None:
+            raise NotFoundError("Job de importacao nao encontrado.")
+
+        try:
+            atual = JobStatus(str(raw.get("status") or JobStatus.CREATED.value))
+        except ValueError:
+            atual = JobStatus.CREATED
+
+        if atual in TERMINAL_JOB_STATUSES:
+            raise ConflictError("O job ja foi finalizado e nao pode ser cancelado.")
+
+        await self._supabase.update_guia_ai_job(
+            job_id=job_id,
+            payload={
+                "status": JobStatus.CANCELLED.value,
+                "etapa_atual": None,
+                "progresso_percentual": JOB_PROGRESS[JobStatus.CANCELLED],
+                "mensagem_usuario": "Importacao cancelada pelo usuario.",
+                "concluido_em": datetime.now(timezone.utc).isoformat(),
+                "cancelled_em": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        atualizado = await self._supabase.get_guia_ai_job(job_id=job_id)
+        if atualizado is None:
+            raise NotFoundError("Job de importacao nao encontrado.")
+        logger.info("guias_ai.job.cancelled job_id=%s", job_id)
+        return self._mapear_job(atualizado)
+
+    async def reexecutar_job(self, *, job_id: str) -> JobResponse:
+        original = await self._supabase.get_guia_ai_job(job_id=job_id)
+        if original is None:
+            raise NotFoundError("Job de importacao nao encontrado.")
+
+        try:
+            status = JobStatus(str(original.get("status") or JobStatus.CREATED.value))
+        except ValueError:
+            status = JobStatus.CREATED
+
+        # So permite retry de jobs em estado terminal (e nao-completos).
+        if status not in (JobStatus.FAILED, JobStatus.INVALID_CONTENT, JobStatus.CANCELLED):
+            raise ConflictError(
+                "So e possivel reexecutar jobs cancelados, falhos ou invalidos."
+            )
+
+        await self._enforce_rate_limit(grupo_id=str(original.get("grupo_id", "")))
+        novo_payload = {
+            "grupo_id": original.get("grupo_id"),
+            "perfil_id": original.get("perfil_id"),
+            "status": JobStatus.CREATED.value,
+            "etapa_atual": JOB_USER_LABEL[JobStatus.CREATED],
+            "progresso_percentual": JOB_PROGRESS[JobStatus.CREATED],
+            "texto_original": original.get("texto_original"),
+            "texto_hash": original.get("texto_hash"),
+            "url_origem": original.get("url_origem"),
+            "resultado": {"reexecutado_de": original.get("id")},
+            "mensagem_usuario": "Reprocessando o texto original.",
+            "parent_job_id": original.get("id"),
+        }
+        criado = await self._supabase.insert_guia_ai_job(payload=novo_payload)
+        novo_id = str(criado.get("id", ""))
+        task = asyncio.create_task(
+            self._runner.executar(job_id=novo_id),
+            name=f"guias_ai_job:{novo_id}",
+        )
+        task.add_done_callback(self._log_task_outcome)
+        logger.info(
+            "guias_ai.job.retried original_job_id=%s new_job_id=%s",
+            job_id,
+            novo_id,
+        )
+        return self._mapear_job(criado)
+
+    async def watchdog(self) -> dict[str, Any]:
+        threshold = datetime.now(timezone.utc) - timedelta(
+            seconds=self._settings.guias_ai_watchdog_max_silence_seconds
+        )
+        threshold_iso = threshold.isoformat()
+        stale = await self._supabase.list_stale_active_jobs(threshold_iso=threshold_iso)
+        marcados = 0
+        for job in stale:
+            try:
+                await self._supabase.update_guia_ai_job(
+                    job_id=str(job.get("id", "")),
+                    payload={
+                        "status": JobStatus.FAILED.value,
+                        "etapa_atual": None,
+                        "progresso_percentual": JOB_PROGRESS[JobStatus.FAILED],
+                        "mensagem_usuario": (
+                            "Processamento ficou parado por tempo demais e foi encerrado."
+                        ),
+                        "concluido_em": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                marcados += 1
+            except Exception:
+                logger.exception(
+                    "guias_ai.watchdog.update_failed job_id=%s",
+                    job.get("id"),
+                )
+        logger.info(
+            "guias_ai.watchdog.run threshold=%s detectados=%s marcados=%s",
+            threshold_iso,
+            len(stale),
+            marcados,
+        )
+        return {
+            "threshold": threshold_iso,
+            "detectados": len(stale),
+            "marcados_falhos": marcados,
+        }
 
     async def listar_jobs(
         self,
@@ -310,6 +443,27 @@ class GuiasAiUseCase:
         grupo = await self._supabase.get_grupo(grupo_id=grupo_id)
         if grupo is None:
             raise NotFoundError("Grupo nao encontrado.")
+
+    async def _enforce_rate_limit(self, *, grupo_id: str) -> None:
+        try:
+            ativos = await self._supabase.count_active_guia_ai_jobs(grupo_id=grupo_id)
+        except Exception:
+            logger.exception("guias_ai.rate_limit.count_failed grupo_id=%s", grupo_id)
+            return
+        if ativos >= self._settings.guias_ai_max_active_jobs_per_grupo:
+            raise ConflictError(
+                "Voce ja tem outras importacoes em andamento para este grupo. "
+                "Aguarde ou cancele uma antes de iniciar outra."
+            )
+
+    def _is_recent(self, raw_dt: Any) -> bool:
+        parsed = _parse_dt(raw_dt)
+        if parsed is None:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - parsed
+        return delta.total_seconds() < self._settings.guias_ai_idempotency_window_hours * 3600
 
     @staticmethod
     def _log_task_outcome(task: asyncio.Task[Any]) -> None:

@@ -72,6 +72,43 @@ class SupabaseNoAuthGuiaAiMixin:
             context="guia_ai_jobs_update",
         )
 
+    async def count_active_guia_ai_jobs(self, *, grupo_id: str) -> int:
+        response = await self._request(
+            "GET",
+            self._build_url("rest", "guia_ai_jobs"),
+            headers={
+                **self._headers(),
+                "Prefer": "count=exact",
+                "Range-Unit": "items",
+                "Range": "0-0",
+            },
+            params=[
+                ("grupo_id", f"eq.{grupo_id}"),
+                ("status", "not.in.(completed,completed_with_warnings,invalid_content,failed,cancelled)"),
+                ("select", "id"),
+            ],
+            context="guia_ai_jobs_count_active",
+        )
+        return self._parse_content_range_total(response.headers.get("content-range", ""))
+
+    async def list_stale_active_jobs(self, *, threshold_iso: str) -> list[dict[str, Any]]:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "guia_ai_jobs"),
+            headers=self._headers(),
+            params=[
+                ("status", "not.in.(completed,completed_with_warnings,invalid_content,failed,cancelled)"),
+                ("atualizado_em", f"lt.{threshold_iso}"),
+                ("select", "id,grupo_id,status,atualizado_em"),
+                ("order", "atualizado_em.asc"),
+                ("limit", "100"),
+            ],
+            context="guia_ai_jobs_list_stale",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError("supabase", "Resposta invalida ao listar jobs travados.")
+        return [item for item in payload if isinstance(item, dict)]
+
     async def get_guia_ai_job_by_hash(
         self,
         *,

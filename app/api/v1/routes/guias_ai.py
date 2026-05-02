@@ -56,6 +56,41 @@ async def listar_imports(
     return await use_case.listar_jobs(grupo_id=grupo_id, limit=limit)
 
 
+@router.post(
+    "/imports/{job_id}/cancelar",
+    response_model=JobResponse,
+    summary="Cancela um job de importacao em andamento",
+)
+async def cancelar_import(
+    job_id: str = Path(..., min_length=8, max_length=64),
+    use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
+) -> JobResponse:
+    return await use_case.cancelar_job(job_id=job_id)
+
+
+@router.post(
+    "/imports/{job_id}/reexecutar",
+    response_model=JobResponse,
+    status_code=202,
+    summary="Reexecuta um job que falhou, foi cancelado ou marcado como invalido",
+)
+async def reexecutar_import(
+    job_id: str = Path(..., min_length=8, max_length=64),
+    use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
+) -> JobResponse:
+    return await use_case.reexecutar_job(job_id=job_id)
+
+
+@router.post(
+    "/imports/watchdog",
+    summary="Marca como 'failed' jobs que ficaram travados sem atualizacao",
+)
+async def executar_watchdog(
+    use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
+) -> dict:
+    return await use_case.watchdog()
+
+
 @router.get(
     "/{guia_id}",
     response_model=GuiaIaResponse,
