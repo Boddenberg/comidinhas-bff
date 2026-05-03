@@ -23,11 +23,19 @@
         "perfil_id": "cole-o-uuid-aqui",
         "grupo_id": "cole-o-uuid-aqui",
         "lugar_id": "cole-o-uuid-aqui",
-        "foto_id": "cole-o-uuid-aqui"
+        "foto_id": "cole-o-uuid-aqui",
+        "job_id": "00000000-0000-0000-0000-000000000000",
+        "guia_id": "00000000-0000-0000-0000-000000000000",
+        "item_id": "00000000-0000-0000-0000-000000000000",
+        "item_id_1": "00000000-0000-0000-0000-000000000000",
+        "item_id_2": "00000000-0000-0000-0000-000000000000",
+        "item_id_3": "00000000-0000-0000-0000-000000000000",
+        "item_id_4": "00000000-0000-0000-0000-000000000000"
       },
       "color": null,
       "isPrivate": false,
-      "_type": "environment"
+      "_type": "environment",
+      "dataPropertyOrder": {}
     },
     {
       "_id": "env_local",
