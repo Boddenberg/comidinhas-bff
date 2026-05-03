@@ -8,6 +8,7 @@ from typing import Any
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
 from app.integrations.openai.client import OpenAIClient
+from app.modules.guias_ai.cost_tracker import CostTracker
 from app.modules.guias_ai.sanitizer import normalizar_nome
 from app.modules.guias_ai.schemas import ExtractedGuide, ExtractedRestaurant
 
@@ -121,11 +122,21 @@ class GuideExtractor:
         self._openai_client = openai_client
         self._settings = settings
 
-    async def extrair(self, texto: str) -> ExtractedGuide:
+    async def extrair(
+        self,
+        texto: str,
+        *,
+        tracker: CostTracker | None = None,
+    ) -> ExtractedGuide:
         full_text = texto[: min(len(texto), self._settings.guias_ai_text_max_chars)]
         chunks = self._split_chunks(full_text)
         if len(chunks) <= 1:
-            return await self._extrair_chunk(full_text, chunk_index=0, total_chunks=1)
+            return await self._extrair_chunk(
+                full_text,
+                chunk_index=0,
+                total_chunks=1,
+                tracker=tracker,
+            )
 
         logger.info(
             "guias_ai.extractor.chunked total_chars=%s chunks=%s overlap=%s",
@@ -142,6 +153,7 @@ class GuideExtractor:
                     body,
                     chunk_index=idx,
                     total_chunks=len(chunks),
+                    tracker=tracker,
                 )
 
         partials = await asyncio.gather(
@@ -159,6 +171,7 @@ class GuideExtractor:
         *,
         chunk_index: int,
         total_chunks: int,
+        tracker: CostTracker | None = None,
     ) -> ExtractedGuide:
         prompt = self._montar_prompt(
             texto,
@@ -166,7 +179,7 @@ class GuideExtractor:
             total_chunks=total_chunks,
         )
         try:
-            payload = await self._openai_client.chat_json(
+            payload, usage = await self._openai_client.chat_json_with_usage(
                 prompt=prompt,
                 system_prompt=_EXTRACTOR_SYSTEM,
                 model=self._settings.guias_ai_extractor_model,
@@ -183,6 +196,11 @@ class GuideExtractor:
                 return self._fallback_deterministico(texto)
             return ExtractedGuide()
 
+        if tracker is not None:
+            tracker.record_llm(
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+            )
         return self._mapear(payload)
 
     def _split_chunks(self, texto: str) -> list[str]:

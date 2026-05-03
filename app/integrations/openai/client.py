@@ -51,6 +51,28 @@ class OpenAIClient:
         schema_name: str,
         schema: dict[str, Any],
     ) -> dict[str, Any]:
+        payload, _usage = await self.chat_json_with_usage(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model,
+            schema_name=schema_name,
+            schema=schema,
+        )
+        return payload
+
+    async def chat_json_with_usage(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        schema_name: str,
+        schema: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, int]]:
+        """Like `chat_json` but also returns the token usage from the response.
+
+        Used by the AI guide pipeline to populate cost accounting on the job.
+        """
         self._ensure_api_key()
 
         response = await self._post_responses(
@@ -90,7 +112,21 @@ class OpenAIClient:
                 "A OpenAI retornou um JSON inesperado.",
             )
 
-        return payload
+        return payload, self._extract_usage(response)
+
+    @staticmethod
+    def _extract_usage(response: dict[str, Any]) -> dict[str, int]:
+        usage = response.get("usage")
+        if not isinstance(usage, dict):
+            return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        total = int(usage.get("total_tokens") or (input_tokens + output_tokens))
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total,
+        }
 
     def _ensure_api_key(self) -> None:
         if self._settings.is_openai_configured:

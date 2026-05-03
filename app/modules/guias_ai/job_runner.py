@@ -12,6 +12,7 @@ from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
 from app.modules.guias_ai.classifier import ContentClassifier
+from app.modules.guias_ai.cost_tracker import CostTracker
 from app.modules.guias_ai.extractor import GuideExtractor
 from app.modules.guias_ai.internal_matcher import InternalMatcher
 from app.modules.guias_ai.photo_selector import escolher_capa
@@ -97,6 +98,7 @@ class JobRunner:
 
     async def _executar_interno(self, *, job_id: str) -> None:
         started_at = time.perf_counter()
+        tracker = CostTracker()
         job = await self._supabase.get_guia_ai_job(job_id=job_id)
         if job is None:
             logger.warning("guias_ai.job.missing job_id=%s", job_id)
@@ -150,7 +152,7 @@ class JobRunner:
             status=JobStatus.CLASSIFYING_CONTENT,
             mensagem="Avaliando se o texto e gastronomico.",
         )
-        classificacao = await self._classifier.classificar(texto_normalizado)
+        classificacao = await self._classifier.classificar(texto_normalizado, tracker=tracker)
         if (
             classificacao.tipo in _INVALID_TYPES
             or (
@@ -180,6 +182,7 @@ class JobRunner:
             self._extractor.extrair,
             texto_normalizado,
             etapa="extracao",
+            kwargs={"tracker": tracker},
         )
         if extracted is None:
             await self._fail(
@@ -339,8 +342,11 @@ class JobRunner:
             )
             async for index, enriched, calls, has_photo in stream:
                 calls_done += calls
+                if calls:
+                    tracker.record_google_calls(calls)
                 if has_photo:
                     photos_found += 1
+                    tracker.record_photo()
                 enriched = self._aplicar_match_parcial(enriched, matches[index])
                 items_finais[index] = enriched
                 await self._patch_item_enriquecido(
@@ -532,6 +538,7 @@ class JobRunner:
 
         # 8. Conclusao
         duracao_ms = int((time.perf_counter() - started_at) * 1000)
+        cost_snapshot = tracker.snapshot()
         estatisticas = {
             "restaurantes_extraidos": len(extracted.restaurantes),
             "restaurantes_salvos": len(items_finais),
@@ -550,6 +557,12 @@ class JobRunner:
             + sum(1 for item in items_finais if item.foto_url and item.lugar_existente),
             "pendencias": pendencias,
             "duracao_ms": duracao_ms,
+            "chamadas_llm": cost_snapshot["chamadas_llm"],
+            "tokens_entrada": cost_snapshot["tokens_entrada"],
+            "tokens_saida": cost_snapshot["tokens_saida"],
+            "chamadas_google": cost_snapshot["chamadas_google"],
+            "custo_estimado_usd": cost_snapshot["custo_estimado_usd"],
+            "custo_estimado_brl": cost_snapshot["custo_estimado_brl"],
         }
 
         final_status = (
@@ -591,11 +604,12 @@ class JobRunner:
 
     # ---------------------------------------------------------- helpers
 
-    async def _executar_com_retry(self, fn, *args, etapa: str):
+    async def _executar_com_retry(self, fn, *args, etapa: str, kwargs: dict | None = None):
         last_error: Exception | None = None
+        kwargs = kwargs or {}
         for attempt in range(self._settings.guias_ai_step_max_attempts):
             try:
-                return await fn(*args)
+                return await fn(*args, **kwargs)
             except ExternalServiceError as exc:
                 last_error = exc
                 logger.warning(

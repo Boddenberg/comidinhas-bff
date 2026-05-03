@@ -7,6 +7,7 @@ from typing import Any
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
 from app.integrations.openai.client import OpenAIClient
+from app.modules.guias_ai.cost_tracker import CostTracker
 from app.modules.guias_ai.schemas import ContentClassification, TipoConteudo
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,12 @@ class ContentClassifier:
         self._openai_client = openai_client
         self._settings = settings
 
-    async def classificar(self, texto: str) -> ContentClassification:
+    async def classificar(
+        self,
+        texto: str,
+        *,
+        tracker: CostTracker | None = None,
+    ) -> ContentClassification:
         heuristic = self._heuristica(texto)
         if heuristic.tipo in (TipoConteudo.NAO_GASTRONOMICO, TipoConteudo.INSUFICIENTE):
             if heuristic.confianca >= 0.8:
@@ -136,7 +142,7 @@ class ContentClassifier:
             return heuristic
 
         try:
-            return await self._classificar_com_llm(texto, fallback=heuristic)
+            return await self._classificar_com_llm(texto, fallback=heuristic, tracker=tracker)
         except ExternalServiceError as exc:
             logger.warning("guias_ai.classifier.llm_failed reason=%s", exc)
             return heuristic
@@ -146,15 +152,21 @@ class ContentClassifier:
         texto: str,
         *,
         fallback: ContentClassification,
+        tracker: CostTracker | None,
     ) -> ContentClassification:
         prompt = self._montar_prompt(texto)
-        payload = await self._openai_client.chat_json(
+        payload, usage = await self._openai_client.chat_json_with_usage(
             prompt=prompt,
             system_prompt=_CLASSIFIER_SYSTEM,
             model=self._settings.guias_ai_classifier_model,
             schema_name="comidinhas_classificador",
             schema=_CLASSIFIER_SCHEMA,
         )
+        if tracker is not None:
+            tracker.record_llm(
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+            )
         try:
             tipo = TipoConteudo(str(payload.get("tipo")))
         except ValueError:

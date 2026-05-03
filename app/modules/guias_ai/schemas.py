@@ -147,9 +147,13 @@ class JobResumoEstatisticas(BaseModel):
     fotos_encontradas: int = 0
     pendencias: int = 0
     chamadas_llm: int = 0
+    tokens_entrada: int = 0
+    tokens_saida: int = 0
     chamadas_google: int = 0
+    custo_estimado_usd: float | None = None
     custo_estimado_brl: float | None = None
     duracao_ms: int | None = None
+    lugares_criados_automaticamente: int = 0
 
 
 class JobResponse(BaseModel):
