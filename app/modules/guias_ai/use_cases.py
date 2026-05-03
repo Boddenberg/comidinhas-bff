@@ -16,6 +16,7 @@ from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
 from app.modules.guias_ai.job_runner import JobRunner
+from app.modules.guias_ai.task_registry import JobTaskRegistry, get_registry
 from app.modules.guias_ai.sanitizer import (
     hash_texto,
     normalizar_texto,
@@ -59,11 +60,13 @@ class GuiasAiUseCase:
         supabase_client: SupabaseClient,
         openai_client: OpenAIClient,
         google_places_client: GooglePlacesClient,
+        task_registry: JobTaskRegistry | None = None,
     ) -> None:
         self._settings = settings
         self._supabase = supabase_client
         self._openai = openai_client
         self._google = google_places_client
+        self._task_registry = task_registry or get_registry()
         self._runner = JobRunner(
             settings=settings,
             supabase_client=supabase_client,
@@ -172,6 +175,7 @@ class GuiasAiUseCase:
             name=f"guias_ai_job:{job_id}",
         )
         task.add_done_callback(self._log_task_outcome)
+        self._task_registry.register(job_id, task)
         return self._mapear_job(criado)
 
     async def status_job(self, *, job_id: str) -> JobResponse:
@@ -271,10 +275,18 @@ class GuiasAiUseCase:
                 "cancelled_em": datetime.now(timezone.utc).isoformat(),
             },
         )
+        # Aborta a task em curso, se ela esta rodando neste processo. Isso
+        # propaga `asyncio.CancelledError` no proximo `await` (LLM, Places),
+        # evitando gastar tokens/quotas alem desse ponto.
+        cancelled_in_flight = self._task_registry.cancel(job_id)
         atualizado = await self._supabase.get_guia_ai_job(job_id=job_id)
         if atualizado is None:
             raise NotFoundError("Job de importacao nao encontrado.")
-        logger.info("guias_ai.job.cancelled job_id=%s", job_id)
+        logger.info(
+            "guias_ai.job.cancelled job_id=%s in_flight_aborted=%s",
+            job_id,
+            cancelled_in_flight,
+        )
         return self._mapear_job(atualizado)
 
     async def reexecutar_job(self, *, job_id: str) -> JobResponse:
@@ -321,6 +333,7 @@ class GuiasAiUseCase:
             name=f"guias_ai_job:{novo_id}",
         )
         task.add_done_callback(self._log_task_outcome)
+        self._task_registry.register(novo_id, task)
         logger.info(
             "guias_ai.job.retried original_job_id=%s new_job_id=%s",
             job_id,

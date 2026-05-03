@@ -89,12 +89,41 @@ class JobRunner:
             )
         except _JobCancelled:
             logger.info("guias_ai.job.cancel_observed job_id=%s", job_id)
+        except asyncio.CancelledError:
+            logger.info("guias_ai.job.task_cancelled job_id=%s", job_id)
+            await self._garantir_status_cancelado(job_id=job_id)
+            # Nao re-levanta: a task termina graciosamente como cancelada.
+            return
         except Exception as exc:  # pragma: no cover - last-resort safety net
             logger.exception("guias_ai.job.unhandled job_id=%s", job_id)
             await self._fail(
                 job_id=job_id,
                 motivo=f"Falha inesperada no processamento: {type(exc).__name__}",
             )
+
+    async def _garantir_status_cancelado(self, *, job_id: str) -> None:
+        try:
+            current = await self._supabase.get_guia_ai_job(job_id=job_id)
+        except Exception:
+            return
+        if not isinstance(current, dict):
+            return
+        if str(current.get("status") or "") == JobStatus.CANCELLED.value:
+            return
+        try:
+            await self._supabase.update_guia_ai_job(
+                job_id=job_id,
+                payload={
+                    "status": JobStatus.CANCELLED.value,
+                    "etapa_atual": None,
+                    "progresso_percentual": JOB_PROGRESS[JobStatus.CANCELLED],
+                    "mensagem_usuario": "Importacao cancelada pelo usuario.",
+                    "concluido_em": datetime.now(timezone.utc).isoformat(),
+                    "cancelled_em": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception:
+            logger.exception("guias_ai.job.mark_cancelled_failed job_id=%s", job_id)
 
     async def _executar_interno(self, *, job_id: str) -> None:
         started_at = time.perf_counter()
