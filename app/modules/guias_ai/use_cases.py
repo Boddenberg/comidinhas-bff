@@ -181,21 +181,49 @@ class GuiasAiUseCase:
         return self._mapear_job(raw)
 
     async def stream_job(self, *, job_id: str):
-        """Async generator yielding job snapshots until terminal state.
+        """Async generator yielding stream events until job reaches terminal state.
 
-        Used by the SSE endpoint. Emits a snapshot whenever progress, status
-        or message changes, plus a heartbeat to keep proxies alive.
+        Yields tuples ``(event_type, payload_dict)``. Possible events:
+        - ``"progresso"``: job snapshot (status/progress/message changed).
+        - ``"item"``: a `guia_itens` row whose `status_matching` changed since
+          last poll (typically: pendente -> encontrado_google / criado /
+          confirmado_usuario / etc.).
+
+        Items are emitted only after the job has a `guia_id` set, which
+        happens right after extraction.
         """
         max_seconds = self._settings.guias_ai_stream_max_seconds
         poll_seconds = self._settings.guias_ai_stream_poll_seconds
         deadline = asyncio.get_event_loop().time() + max_seconds
         last_signature: tuple[Any, ...] | None = None
         last_emit = 0.0
+        seen_items: dict[str, str] = {}  # item_id -> last status_matching seen
 
-        # Garante que o job existe antes de comecar a streamar.
         first = await self.status_job(job_id=job_id)
-        yield first
+        yield "progresso", first.model_dump(mode="json")
         last_signature = (first.status, first.progresso_percentual, first.mensagem_usuario)
+
+        async def emit_items(guia_id: str | None):
+            if not guia_id:
+                return
+            try:
+                rows = await self._supabase.list_guia_itens(guia_id=guia_id)
+            except Exception:
+                return
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_id = str(row.get("id") or "")
+                status_atual = str(row.get("status_matching") or "")
+                if not row_id or not status_atual:
+                    continue
+                if seen_items.get(row_id) == status_atual:
+                    continue
+                seen_items[row_id] = status_atual
+                yield "item", self._mapear_item(row).model_dump(mode="json")
+
+        async for event_type, payload in emit_items(first.guia_id):
+            yield event_type, payload
 
         while asyncio.get_event_loop().time() < deadline:
             try:
@@ -210,9 +238,11 @@ class GuiasAiUseCase:
             )
             now = asyncio.get_event_loop().time()
             if signature != last_signature or (now - last_emit) >= 15:
-                yield current
+                yield "progresso", current.model_dump(mode="json")
                 last_signature = signature
                 last_emit = now
+            async for event_type, payload in emit_items(current.guia_id):
+                yield event_type, payload
             if current.status in TERMINAL_JOB_STATUSES:
                 return
             await asyncio.sleep(poll_seconds)

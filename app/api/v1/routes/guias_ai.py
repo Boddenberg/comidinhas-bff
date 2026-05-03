@@ -48,7 +48,7 @@ async def status_import(
 
 @router.get(
     "/imports/{job_id}/stream",
-    summary="Stream Server-Sent Events com o progresso do job",
+    summary="Stream Server-Sent Events com progresso do job e itens enriquecidos",
     response_class=StreamingResponse,
 )
 async def stream_import(
@@ -56,9 +56,10 @@ async def stream_import(
     use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
 ) -> StreamingResponse:
     async def event_stream():
-        async for snapshot in use_case.stream_job(job_id=job_id):
-            payload = snapshot.model_dump_json()
-            yield f"event: progresso\ndata: {payload}\n\n"
+        import json as _json
+
+        async for event_type, payload in use_case.stream_job(job_id=job_id):
+            yield f"event: {event_type}\ndata: {_json.dumps(payload, default=str)}\n\n"
         yield "event: end\ndata: {}\n\n"
 
     return StreamingResponse(
