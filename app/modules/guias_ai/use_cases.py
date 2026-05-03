@@ -103,7 +103,17 @@ class GuiasAiUseCase:
                 redigidos,
             )
 
-        await self._enforce_rate_limit(grupo_id=request.grupo_id)
+        await self._enforce_rate_limit(
+            grupo_id=request.grupo_id,
+            perfil_id=request.perfil_id,
+        )
+
+        # Limpa jobs orfaos antes de criar um novo: nao bloqueia a request,
+        # so corre em fire-and-forget.
+        asyncio.create_task(
+            self._watchdog_silencioso(),
+            name="guias_ai_opportunistic_watchdog",
+        )
 
         texto_hash_value = hash_texto(texto_limpo[: self._settings.guias_ai_text_max_chars])
         existente = await self._supabase.get_guia_ai_job_by_hash(
@@ -253,7 +263,14 @@ class GuiasAiUseCase:
                 "So e possivel reexecutar jobs cancelados, falhos ou invalidos."
             )
 
-        await self._enforce_rate_limit(grupo_id=str(original.get("grupo_id", "")))
+        await self._enforce_rate_limit(
+            grupo_id=str(original.get("grupo_id", "")),
+            perfil_id=(
+                str(original.get("perfil_id"))
+                if original.get("perfil_id")
+                else None
+            ),
+        )
         novo_payload = {
             "grupo_id": original.get("grupo_id"),
             "perfil_id": original.get("perfil_id"),
@@ -280,6 +297,12 @@ class GuiasAiUseCase:
             novo_id,
         )
         return self._mapear_job(criado)
+
+    async def _watchdog_silencioso(self) -> None:
+        try:
+            await self.watchdog()
+        except Exception:
+            logger.exception("guias_ai.watchdog.silent_failed")
 
     async def watchdog(self) -> dict[str, Any]:
         threshold = datetime.now(timezone.utc) - timedelta(
@@ -613,17 +636,33 @@ class GuiasAiUseCase:
         if grupo is None:
             raise NotFoundError("Grupo nao encontrado.")
 
-    async def _enforce_rate_limit(self, *, grupo_id: str) -> None:
+    async def _enforce_rate_limit(
+        self,
+        *,
+        grupo_id: str,
+        perfil_id: str | None = None,
+    ) -> None:
         try:
-            ativos = await self._supabase.count_active_guia_ai_jobs(grupo_id=grupo_id)
+            ativos_grupo = await self._supabase.count_active_guia_ai_jobs(grupo_id=grupo_id)
         except Exception:
             logger.exception("guias_ai.rate_limit.count_failed grupo_id=%s", grupo_id)
             return
-        if ativos >= self._settings.guias_ai_max_active_jobs_per_grupo:
+        if ativos_grupo >= self._settings.guias_ai_max_active_jobs_per_grupo:
             raise ConflictError(
                 "Voce ja tem outras importacoes em andamento para este grupo. "
                 "Aguarde ou cancele uma antes de iniciar outra."
             )
+        if perfil_id:
+            try:
+                ativos_perfil = await self._supabase.count_active_guia_ai_jobs(perfil_id=perfil_id)
+            except Exception:
+                logger.exception("guias_ai.rate_limit.count_failed perfil_id=%s", perfil_id)
+                return
+            if ativos_perfil >= self._settings.guias_ai_max_active_jobs_per_perfil:
+                raise ConflictError(
+                    "Voce tem importacoes em andamento demais. "
+                    "Aguarde uma terminar antes de iniciar outra."
+                )
 
     def _is_recent(self, raw_dt: Any) -> bool:
         parsed = _parse_dt(raw_dt)

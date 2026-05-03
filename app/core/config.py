@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     guias_ai_classifier_skip_score: float = Field(default=0.85, ge=0.5, le=1.0)
     guias_ai_idempotency_window_hours: int = Field(default=24, ge=1, le=168)
     guias_ai_max_active_jobs_per_grupo: int = Field(default=3, ge=1, le=20)
+    guias_ai_max_active_jobs_per_perfil: int = Field(default=5, ge=1, le=30)
     guias_ai_watchdog_max_silence_seconds: int = Field(default=180, ge=30, le=1800)
     guias_ai_places_cache_ttl_seconds: int = Field(default=86_400, ge=60, le=604_800)
     guias_ai_places_cache_max_entries: int = Field(default=1024, ge=16, le=10_000)

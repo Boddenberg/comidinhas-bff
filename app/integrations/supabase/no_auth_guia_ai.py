@@ -72,7 +72,20 @@ class SupabaseNoAuthGuiaAiMixin:
             context="guia_ai_jobs_update",
         )
 
-    async def count_active_guia_ai_jobs(self, *, grupo_id: str) -> int:
+    async def count_active_guia_ai_jobs(
+        self,
+        *,
+        grupo_id: str | None = None,
+        perfil_id: str | None = None,
+    ) -> int:
+        params: list[tuple[str, str]] = [
+            ("status", "not.in.(completed,completed_with_warnings,invalid_content,failed,cancelled)"),
+            ("select", "id"),
+        ]
+        if grupo_id:
+            params.insert(0, ("grupo_id", f"eq.{grupo_id}"))
+        if perfil_id:
+            params.insert(0, ("perfil_id", f"eq.{perfil_id}"))
         response = await self._request(
             "GET",
             self._build_url("rest", "guia_ai_jobs"),
@@ -82,11 +95,7 @@ class SupabaseNoAuthGuiaAiMixin:
                 "Range-Unit": "items",
                 "Range": "0-0",
             },
-            params=[
-                ("grupo_id", f"eq.{grupo_id}"),
-                ("status", "not.in.(completed,completed_with_warnings,invalid_content,failed,cancelled)"),
-                ("select", "id"),
-            ],
+            params=params,
             context="guia_ai_jobs_count_active",
         )
         return self._parse_content_range_total(response.headers.get("content-range", ""))
