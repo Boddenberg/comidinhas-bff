@@ -547,6 +547,87 @@ class GuiasAiUseCase:
             nao_encontrados=sorted(set(nao_encontrados)),
         )
 
+    async def remover_guia_ia(
+        self,
+        *,
+        guia_id: str,
+        remover_lugares_auto: bool = False,
+    ) -> dict[str, Any]:
+        """Delete an AI-generated guide. Optionally cleanup the lugares the
+        pipeline auto-created (those with ``extra.fonte == 'guias_ai_auto'``)
+        that the user hasn't touched.
+        """
+        guia = await self._supabase.get_guia(guia_id=guia_id)
+        if guia is None:
+            raise NotFoundError("Guia nao encontrado.")
+
+        lugares_removidos: list[str] = []
+        if remover_lugares_auto:
+            lugares_removidos = await self._limpar_lugares_auto_criados(guia_id=guia_id)
+
+        await self._supabase.delete_guia(guia_id=guia_id)
+        return {
+            "sucesso": True,
+            "mensagem": "Guia removido com sucesso.",
+            "lugares_auto_removidos": lugares_removidos,
+        }
+
+    async def _limpar_lugares_auto_criados(self, *, guia_id: str) -> list[str]:
+        try:
+            itens = await self._supabase.list_guia_itens(guia_id=guia_id)
+        except Exception:
+            logger.exception("guias_ai.cleanup.list_itens_failed guia_id=%s", guia_id)
+            return []
+
+        candidatos: list[str] = []
+        seen: set[str] = set()
+        for item in itens:
+            if not isinstance(item, dict):
+                continue
+            lugar_id = item.get("lugar_id")
+            if not isinstance(lugar_id, str) or not lugar_id or lugar_id in seen:
+                continue
+            seen.add(lugar_id)
+            candidatos.append(lugar_id)
+
+        removidos: list[str] = []
+        for lugar_id in candidatos:
+            try:
+                lugar = await self._supabase.get_lugar(lugar_id=lugar_id)
+            except Exception:
+                logger.exception("guias_ai.cleanup.get_lugar_failed lugar_id=%s", lugar_id)
+                continue
+            if not isinstance(lugar, dict):
+                continue
+            extra = lugar.get("extra") if isinstance(lugar.get("extra"), dict) else {}
+            fonte = str(extra.get("fonte") or "")
+            if fonte != "guias_ai_auto":
+                continue
+            # Nao remove se o usuario ja interagiu com o lugar
+            # (mudou status, marcou favorito, adicionou notas/fotos).
+            if (
+                str(lugar.get("status") or "quero_ir") != "quero_ir"
+                or bool(lugar.get("favorito"))
+                or (lugar.get("notas") or "").strip()
+                or (lugar.get("fotos") or [])
+            ):
+                continue
+            try:
+                await self._supabase.delete_lugar(lugar_id=lugar_id)
+                removidos.append(lugar_id)
+            except Exception:
+                logger.exception(
+                    "guias_ai.cleanup.delete_lugar_failed lugar_id=%s",
+                    lugar_id,
+                )
+        if removidos:
+            logger.info(
+                "guias_ai.cleanup.removidos guia_id=%s total=%s",
+                guia_id,
+                len(removidos),
+            )
+        return removidos
+
     async def remover_item(self, *, guia_id: str, item_id: str) -> GuiaIaResponse:
         item = await self._supabase.get_guia_item(item_id=item_id)
         if item is None or str(item.get("guia_id")) != guia_id:

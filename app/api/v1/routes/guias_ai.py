@@ -203,6 +203,21 @@ async def acoes_em_lote(
 
 
 @router.delete(
+    "/{guia_id}",
+    summary="Remove o guia gerado por IA (opcionalmente limpando lugares auto-criados)",
+)
+async def remover_guia_ia(
+    guia_id: str = Path(..., min_length=8, max_length=64),
+    remover_lugares_auto: bool = Query(default=False),
+    use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
+) -> dict:
+    return await use_case.remover_guia_ia(
+        guia_id=guia_id,
+        remover_lugares_auto=remover_lugares_auto,
+    )
+
+
+@router.delete(
     "/{guia_id}/itens/{item_id}",
     response_model=GuiaIaResponse,
     summary="Remove um item do guia",
