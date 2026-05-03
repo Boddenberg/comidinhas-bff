@@ -381,8 +381,9 @@ class JobRunner:
 
         # 4.1 Cria lugares para os matches Google de alta confianca
         # que ainda nao existem no banco interno do grupo.
+        lugares_auto_criados: list[str] = []
         if self._settings.guias_ai_auto_create_lugares:
-            await self._auto_criar_lugares(
+            lugares_auto_criados = await self._auto_criar_lugares(
                 grupo_id=grupo_id,
                 items=items_finais,
                 inventario=inventario,
@@ -563,12 +564,22 @@ class JobRunner:
             "chamadas_google": cost_snapshot["chamadas_google"],
             "custo_estimado_usd": cost_snapshot["custo_estimado_usd"],
             "custo_estimado_brl": cost_snapshot["custo_estimado_brl"],
+            "lugares_criados_automaticamente": len(lugares_auto_criados),
         }
 
         final_status = (
             JobStatus.COMPLETED
             if qualidade == "alta" and pendencias == 0
             else JobStatus.COMPLETED_WITH_WARNINGS
+        )
+
+        mensagem_final = self._montar_mensagem_final(
+            total=len(items_finais),
+            matches_internos=matches_internos,
+            enriquecidos=estatisticas["enriquecidos_google"],
+            criados_automaticamente=len(lugares_auto_criados),
+            pendencias=pendencias,
+            tem_capa=bool(capa),
         )
 
         await self._supabase.update_guia_ai_job(
@@ -579,17 +590,22 @@ class JobRunner:
                 "etapa_atual": None,
                 "progresso_percentual": JOB_PROGRESS[final_status],
                 "concluido_em": datetime.now(timezone.utc).isoformat(),
-                "mensagem_usuario": (
-                    "Seu guia foi criado."
-                    if final_status == JobStatus.COMPLETED
-                    else "Seu guia foi criado com alguns pontos de atencao."
-                ),
+                "mensagem_usuario": mensagem_final,
                 "alertas": list({*alertas, *self._coletar_alertas(items_finais)}),
                 "estatisticas": estatisticas,
                 "resultado": {
                     "guia_id": guia_id,
                     "qualidade": qualidade,
                     "total_itens": len(items_finais),
+                    "lugares_criados_automaticamente": lugares_auto_criados,
+                    "resumo": mensagem_final,
+                    "stats_resumo": {
+                        "identificados": len(items_finais),
+                        "ja_no_grupo": matches_internos,
+                        "encontrados_google": estatisticas["enriquecidos_google"],
+                        "criados_automaticamente": len(lugares_auto_criados),
+                        "pendencias": pendencias,
+                    },
                 },
             },
         )
@@ -1090,6 +1106,40 @@ class JobRunner:
                 "nome_oficial": item.nome_oficial,
             },
         }
+
+    @staticmethod
+    def _montar_mensagem_final(
+        *,
+        total: int,
+        matches_internos: int,
+        enriquecidos: int,
+        criados_automaticamente: int,
+        pendencias: int,
+        tem_capa: bool,
+    ) -> str:
+        if total == 0:
+            return "Nao consegui identificar restaurantes neste texto."
+
+        partes = [f"Seu guia foi criado com {total} restaurantes."]
+        if matches_internos:
+            partes.append(
+                f"{matches_internos} ja estavam no Comidinhas."
+            )
+        if enriquecidos:
+            partes.append(
+                f"{enriquecidos} foram enriquecidos pelo Google Maps."
+            )
+        if criados_automaticamente:
+            partes.append(
+                f"Adicionamos {criados_automaticamente} novos restaurantes ao seu grupo."
+            )
+        if pendencias:
+            partes.append(
+                f"{pendencias} {'precisa' if pendencias == 1 else 'precisam'} de revisao."
+            )
+        if tem_capa:
+            partes.append("Foto de capa adicionada automaticamente.")
+        return " ".join(partes)
 
     @staticmethod
     def _coletar_alertas(items: list[EnrichedItem]) -> list[str]:
