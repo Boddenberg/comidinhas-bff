@@ -220,8 +220,41 @@ Haversine entre cada candidato e o centroide dos lugares ja salvos pelo
 grupo (dado proprio do grupo, sem expor membros). Se o grupo nao tiver
 lugares com lat/long, cai para o fallback por cidade.
 
-**Streaming.** A rota `/imports/{job_id}/stream` emite Server-Sent Events
-para o frontend atualizar a UI sem polling.
+**Streaming com items.** A rota `/imports/{job_id}/stream` emite dois tipos
+de eventos: `progresso` (a cada mudanca de etapa do job) e `item` (cada vez
+que um restaurante e enriquecido). O frontend pode ir colorindo os cards
+do guia conforme o Google responde, sem polling.
+
+**Itens incrementais.** Os `guia_itens` sao inseridos no banco logo apos a
+extracao com dados basicos e status `pendente`. Conforme o pipeline avanca,
+cada linha e PATCHada com fotos, telefone, rating, etc. O usuario pode
+abrir o guia logo de cara e ver todos os 50 cards ja com nome e posicao.
+
+**Cancelamento cooperativo.** `POST /imports/{id}/cancelar` aborta a task
+em curso via `task.cancel()`, propagando `CancelledError` no proximo
+`await`. Isso evita gastar tokens LLM e quotas Google depois do cancel.
+
+**Retry resumivel.** Quando um job retorna `failed`/`cancelled` mas ja
+tinha criado o guia esqueleto com itens, o `reexecutar` nao refaz a
+extracao do LLM — apenas re-enriquece os itens em status `pendente`,
+`nao_encontrado` ou `baixa_confianca`. Reusa todo o trabalho anterior.
+
+**Limpeza opcional ao deletar.** `DELETE /api/v1/guias/ia/{id}?remover_lugares_auto=true`
+apaga o guia e tambem os lugares que o pipeline auto-criou (marcados com
+`extra.fonte = "guias_ai_auto"`) **se** o usuario nao tiver interagido
+com eles (status default, sem favorito/notas/fotos). Lugares com mexida do
+usuario ficam preservados.
+
+**Cost accounting.** O job rastreia tokens de entrada/saida da OpenAI,
+chamadas Google Places e custo estimado em USD/BRL nas estatisticas. Usado
+pra monitorar gasto sem precisar de painel separado.
+
+**Watchdog oportunista.** Cada nova criacao de job dispara o watchdog em
+fire-and-forget, marcando como `failed` jobs travados sem update por mais
+de 3 minutos. Sem necessidade de cron externo.
+
+**Rate limit por grupo e por perfil.** Maximo 3 jobs ativos por grupo e 5
+por perfil simultaneamente. Configuravel.
 
 ### Limitacoes da primeira versao
 
@@ -230,10 +263,12 @@ para o frontend atualizar a UI sem polling.
   `SuggestionEngine` sem mexer em nada da pipeline.
 - O guia gerado por IA convive com guias manuais na mesma tabela `guias`
   (`tipo_guia = 'ia'`). Os itens ricos ficam em `guia_itens`.
-- Watchdog precisa ser disparado externamente (cron ou hit manual em
-  `POST /api/v1/guias/ia/imports/watchdog`); nao roda sozinho.
-- Cache de Places e in-process (perde-se em cada deploy). Para volume alto
-  vale promover para Redis depois.
+- Cache de Places, registry de tasks de cancelamento e watchdog
+  oportunista sao in-process. Sobrevivem ao tempo de vida do worker, mas
+  nao a um deploy. Para volume alto, promover Cache pra Redis e usar
+  watchdog externo via cron.
+- Cost accounting usa um snapshot fixo de precos (USD/1M tokens) embutido
+  no codigo. Atualize em `cost_tracker.py` quando os precos mudarem.
 - Sem testes automatizados nesta etapa (por escolha de escopo).
 
 ## Setup no Supabase
@@ -288,7 +323,8 @@ O fluxo principal fica:
 - `POST /api/v1/guias/ia/imports/{job_id}/cancelar` cancela um job em andamento.
 - `POST /api/v1/guias/ia/imports/{job_id}/reexecutar` reprocessa um job cancelado/falho.
 - `POST /api/v1/guias/ia/imports/watchdog` marca como `failed` jobs travados sem atualizacao.
-- `GET /api/v1/guias/ia/imports/{job_id}/stream` recebe o progresso por Server-Sent Events.
+- `GET /api/v1/guias/ia/imports/{job_id}/stream` recebe progresso e itens enriquecidos por Server-Sent Events.
+- `DELETE /api/v1/guias/ia/{guia_id}?remover_lugares_auto=true` remove o guia (e opcionalmente os lugares auto-criados que o usuario nao tocou).
 - `POST /api/v1/ia/decidir-restaurante` escolhe restaurante com IA por escopo: `todos`, `favoritos`, `quero_ir` ou `guia`.
 - `POST /api/v1/ia/recomendar-restaurantes` interpreta uma mensagem livre, busca no Supabase e no Google Places, e retorna opcoes estruturadas para o front.
 - `GET /api/v1/home/?grupo_id=...` retorna o agregado do contexto selecionado.
