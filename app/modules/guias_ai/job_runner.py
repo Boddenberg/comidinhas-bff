@@ -133,6 +133,20 @@ class JobRunner:
             logger.warning("guias_ai.job.missing job_id=%s", job_id)
             return
 
+        resultado = job.get("resultado") if isinstance(job.get("resultado"), dict) else {}
+        parent_guia_id = (
+            resultado.get("parent_guia_id")
+            if isinstance(resultado, dict)
+            else None
+        )
+        if parent_guia_id:
+            await self._executar_resumir_guia(
+                job=job,
+                tracker=tracker,
+                started_at=started_at,
+            )
+            return
+
         grupo_id = str(job.get("grupo_id", ""))
         perfil_id = str(job.get("perfil_id") or "") or None
         texto_original = str(job.get("texto_original") or "")
@@ -645,6 +659,255 @@ class JobRunner:
             final_status.value,
             pendencias,
             duracao_ms,
+        )
+
+    async def _executar_resumir_guia(
+        self,
+        *,
+        job: dict[str, Any],
+        tracker: CostTracker,
+        started_at: float,
+    ) -> None:
+        """Resumable retry: only re-enrich items that are still pending.
+
+        Used when a previous job left a partial guide behind (cancelled/failed
+        mid-flight). We skip classification and extraction entirely and run
+        Google enrichment only on the items whose status_matching is still in
+        a non-terminal state.
+        """
+        job_id = str(job.get("id", ""))
+        guia_id = str(job.get("guia_id") or "")
+        grupo_id = str(job.get("grupo_id", ""))
+        if not guia_id:
+            await self._fail(job_id=job_id, motivo="Guia anterior nao encontrado.")
+            return
+
+        guia = await self._supabase.get_guia(guia_id=guia_id)
+        if guia is None:
+            await self._fail(job_id=job_id, motivo="Guia anterior nao existe mais.")
+            return
+
+        await self._update_job_status(
+            job_id=job_id,
+            status=JobStatus.MATCHING_INTERNAL_RESTAURANTS,
+            mensagem="Recarregando itens do guia anterior.",
+            iniciado_em=datetime.now(timezone.utc).isoformat(),
+        )
+
+        rows = await self._supabase.list_guia_itens(guia_id=guia_id)
+        if not rows:
+            await self._fail(
+                job_id=job_id,
+                motivo="Guia anterior nao tem itens para reprocessar.",
+            )
+            return
+
+        pendentes_status = {
+            StatusMatching.PENDENTE.value,
+            StatusMatching.NAO_ENCONTRADO.value,
+            StatusMatching.BAIXA_CONFIANCA.value,
+            StatusMatching.DADOS_INCOMPLETOS.value,
+        }
+        a_enriquecer: list[tuple[int, ExtractedRestaurant, str]] = []
+        items_finais: list[EnrichedItem] = []
+        item_ids: dict[int, str] = {}
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            extracted = ExtractedRestaurant(
+                posicao_ranking=row.get("posicao_ranking"),
+                ordem=int(row.get("ordem") or 0),
+                nome_original=str(row.get("nome_importado") or ""),
+                nome_normalizado=str(row.get("nome_normalizado") or ""),
+                bairro=row.get("bairro"),
+                cidade=row.get("cidade"),
+                estado=row.get("estado"),
+                categoria=row.get("categoria"),
+                trecho_original=row.get("trecho_original"),
+                confianca_extracao=float(row.get("confianca_extracao") or 0.5),
+                alertas=list(row.get("alertas") or []),
+            )
+            current_status = str(row.get("status_matching") or "pendente")
+            index = len(items_finais)
+            item_ids[index] = str(row.get("id") or "")
+
+            if current_status in pendentes_status:
+                a_enriquecer.append((index, extracted, item_ids[index]))
+                items_finais.append(EnrichedItem(extracted=extracted))
+            else:
+                # Item ja resolvido: preserva o que ja temos.
+                try:
+                    status_enum = StatusMatching(current_status)
+                except ValueError:
+                    status_enum = StatusMatching.PENDENTE
+                items_finais.append(
+                    EnrichedItem(
+                        extracted=extracted,
+                        place_id=row.get("place_id"),
+                        endereco=row.get("endereco"),
+                        latitude=row.get("latitude"),
+                        longitude=row.get("longitude"),
+                        google_maps_uri=row.get("google_maps_uri"),
+                        telefone=row.get("telefone"),
+                        site=row.get("site"),
+                        rating=row.get("rating"),
+                        total_avaliacoes=row.get("total_avaliacoes"),
+                        preco_nivel=row.get("preco_nivel"),
+                        foto_url=row.get("foto_url"),
+                        foto_atribuicao=row.get("foto_atribuicao"),
+                        confianca_enriquecimento=float(row.get("confianca_enriquecimento") or 0.0),
+                        score_matching=float(row.get("score_matching") or 0.0),
+                        status_matching=status_enum,
+                        lugar_id=row.get("lugar_id"),
+                        alertas=list(row.get("alertas") or []),
+                    )
+                )
+
+        await self._update_job_status(
+            job_id=job_id,
+            status=JobStatus.SEARCHING_GOOGLE_PLACES,
+            mensagem=f"Re-buscando {len(a_enriquecer)} itens pendentes.",
+        )
+
+        calls_done = 0
+        photos_found = 0
+        if a_enriquecer and self._settings.is_google_places_configured:
+            stream = self._places_enricher.enriquecer_streaming(
+                extracted_items=[(idx, ext) for idx, ext, _ in a_enriquecer],
+                guide_cidade=guia.get("cidade_principal"),
+                guide_categoria=guia.get("categoria"),
+                budget=self._settings.guias_ai_max_places_lookups_per_job,
+            )
+            async for index, enriched, calls, has_photo in stream:
+                calls_done += calls
+                if calls:
+                    tracker.record_google_calls(calls)
+                if has_photo:
+                    photos_found += 1
+                    tracker.record_photo()
+                items_finais[index] = enriched
+                await self._patch_item_enriquecido(
+                    item_id=item_ids.get(index),
+                    item=enriched,
+                )
+
+        # Recalcula sugestoes e capa com tudo.
+        inventario = await self._internal_matcher.carregar_inventario(grupo_id=grupo_id)
+        if self._settings.guias_ai_auto_create_lugares:
+            lugares_auto_criados = await self._auto_criar_lugares(
+                grupo_id=grupo_id,
+                items=items_finais,
+                inventario=inventario,
+                item_ids=item_ids,
+            )
+        else:
+            lugares_auto_criados = []
+
+        await self._update_job_status(
+            job_id=job_id,
+            status=JobStatus.SELECTING_PHOTOS,
+            mensagem="Atualizando capa.",
+        )
+        capa = escolher_capa(items_finais) or guia.get("imagem_capa")
+
+        await self._update_job_status(
+            job_id=job_id,
+            status=JobStatus.CALCULATING_GROUP_SUGGESTIONS,
+            mensagem="Recalculando sugestoes.",
+        )
+        membros = await self._coletar_membros_com_cidade(grupo_id=grupo_id)
+        sugestoes = self._suggestion_engine.calcular(
+            items=items_finais,
+            membros=membros,
+            inventario_grupo=inventario,
+        )
+
+        pendencias = sum(
+            1
+            for item in items_finais
+            if item.status_matching
+            in (
+                StatusMatching.PENDENTE,
+                StatusMatching.NAO_ENCONTRADO,
+                StatusMatching.BAIXA_CONFIANCA,
+                StatusMatching.POSSIVEL_DUPLICADO,
+                StatusMatching.DADOS_INCOMPLETOS,
+            )
+        )
+        matches_internos = sum(
+            1
+            for item in items_finais
+            if item.status_matching == StatusMatching.ENCONTRADO_INTERNO
+        )
+        qualidade = self._qualidade_geral(
+            classificacao_confianca=0.9,  # parent ja passou pela classificacao
+            extracao_confianca=0.9,
+            pendencias=pendencias,
+            total=len(items_finais),
+        )
+
+        await self._supabase.update_guia(
+            guia_id=guia_id,
+            payload={
+                "imagem_capa": capa,
+                "total_itens": len(items_finais),
+                "status_importacao": (
+                    "completo"
+                    if pendencias == 0
+                    else "completo_com_alertas"
+                    if pendencias < len(items_finais)
+                    else "criado_com_pendencias"
+                ),
+                "qualidade_importacao": qualidade,
+                "sugestoes": sugestoes.model_dump(),
+            },
+        )
+
+        duracao_ms = int((time.perf_counter() - started_at) * 1000)
+        cost_snapshot = tracker.snapshot()
+        final_status = (
+            JobStatus.COMPLETED if pendencias == 0 else JobStatus.COMPLETED_WITH_WARNINGS
+        )
+        mensagem_final = self._montar_mensagem_final(
+            total=len(items_finais),
+            matches_internos=matches_internos,
+            enriquecidos=sum(
+                1
+                for item in items_finais
+                if item.status_matching
+                in (StatusMatching.ENCONTRADO_GOOGLE, StatusMatching.BAIXA_CONFIANCA)
+            ),
+            criados_automaticamente=len(lugares_auto_criados),
+            pendencias=pendencias,
+            tem_capa=bool(capa),
+        )
+
+        await self._supabase.update_guia_ai_job(
+            job_id=job_id,
+            payload={
+                "guia_id": guia_id,
+                "status": final_status.value,
+                "etapa_atual": None,
+                "progresso_percentual": JOB_PROGRESS[final_status],
+                "concluido_em": datetime.now(timezone.utc).isoformat(),
+                "mensagem_usuario": mensagem_final,
+                "estatisticas": {
+                    "modo": "resumir",
+                    "itens_re_enriquecidos": len(a_enriquecer),
+                    "buscas_google": calls_done,
+                    "fotos_encontradas": photos_found,
+                    "pendencias": pendencias,
+                    "duracao_ms": duracao_ms,
+                    "lugares_criados_automaticamente": len(lugares_auto_criados),
+                    "chamadas_llm": cost_snapshot["chamadas_llm"],
+                    "tokens_entrada": cost_snapshot["tokens_entrada"],
+                    "tokens_saida": cost_snapshot["tokens_saida"],
+                    "chamadas_google": cost_snapshot["chamadas_google"],
+                    "custo_estimado_usd": cost_snapshot["custo_estimado_usd"],
+                    "custo_estimado_brl": cost_snapshot["custo_estimado_brl"],
+                },
+            },
         )
 
     # ---------------------------------------------------------- helpers

@@ -313,17 +313,30 @@ class GuiasAiUseCase:
                 else None
             ),
         )
+        # Se o job anterior chegou a criar o guia esqueleto, marcamos para
+        # reaproveita-lo: o runner detecta isso e so re-enriquece as
+        # pendencias, sem refazer extracao do LLM.
+        parent_guia_id = original.get("guia_id")
         novo_payload = {
             "grupo_id": original.get("grupo_id"),
             "perfil_id": original.get("perfil_id"),
+            "guia_id": parent_guia_id,
             "status": JobStatus.CREATED.value,
             "etapa_atual": JOB_USER_LABEL[JobStatus.CREATED],
             "progresso_percentual": JOB_PROGRESS[JobStatus.CREATED],
             "texto_original": original.get("texto_original"),
             "texto_hash": original.get("texto_hash"),
             "url_origem": original.get("url_origem"),
-            "resultado": {"reexecutado_de": original.get("id")},
-            "mensagem_usuario": "Reprocessando o texto original.",
+            "resultado": {
+                "reexecutado_de": original.get("id"),
+                "parent_guia_id": parent_guia_id,
+                "modo": "resumir" if parent_guia_id else "do_zero",
+            },
+            "mensagem_usuario": (
+                "Reprocessando apenas as pendencias do guia anterior."
+                if parent_guia_id
+                else "Reprocessando o texto original."
+            ),
             "parent_job_id": original.get("id"),
         }
         criado = await self._supabase.insert_guia_ai_job(payload=novo_payload)
