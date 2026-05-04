@@ -217,6 +217,16 @@ class PlacesEnricher:
                 break
 
         if best_candidate is None:
+            logger.info(
+                "guias_ai.places_enricher.nao_encontrado nome=%s cidade=%s bairro=%s "
+                "categoria=%s tentativas=%s chamadas=%s",
+                item.nome_original,
+                item.cidade or guide_cidade or "-",
+                item.bairro or "-",
+                item.categoria or guide_categoria or "-",
+                len(queries),
+                calls,
+            )
             return _EnrichOutcome(
                 enriched=EnrichedItem(
                     extracted=item,
@@ -228,6 +238,13 @@ class PlacesEnricher:
 
         status = self._status_from_score(best_score)
         enriched = self._mapear(item, best_candidate, score=best_score, status=status)
+        if status == StatusMatching.BAIXA_CONFIANCA:
+            logger.info(
+                "guias_ai.places_enricher.baixa_confianca nome=%s candidato=%s score=%.2f",
+                item.nome_original,
+                best_candidate.display_name or "-",
+                best_score,
+            )
         return _EnrichOutcome(enriched=enriched, calls=calls)
 
     def _build_query_variants(
