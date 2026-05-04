@@ -22,6 +22,7 @@ from app.modules.guias_ai.sanitizer import (
     normalizar_texto,
     redigir_prompt_injection,
 )
+from app.modules.guias_ai.url_fetcher import fetch_url_as_text
 from app.modules.guias_ai.schemas import (
     CriarGuiaIaRequest,
     GuiaIaCapaUpdateRequest,
@@ -83,11 +84,48 @@ class GuiasAiUseCase:
             )
         await self._garantir_grupo(grupo_id=request.grupo_id)
 
-        texto_limpo = normalizar_texto(request.texto)
-        if len(texto_limpo) < self._settings.guias_ai_text_min_chars:
-            raise BadRequestError(
-                "O texto colado e curto demais para gerar um guia.",
+        texto_bruto = request.texto
+        url_origem = request.url_origem
+        titulo_sugerido = request.titulo_sugerido
+        fonte_texto = "colado"
+
+        # Se o cliente nao enviou texto mas mandou um link, baixamos a pagina
+        # e usamos o texto extraido como entrada do pipeline. URL invalida ou
+        # falha de rede sao retornadas direto pro frontend (BadRequest/502).
+        if not texto_bruto and url_origem:
+            fonte_texto = "url"
+            resultado = await fetch_url_as_text(
+                url_origem,
+                timeout_seconds=self._settings.guias_ai_url_fetch_timeout_seconds,
+                max_bytes=self._settings.guias_ai_url_fetch_max_bytes,
+                max_redirects=self._settings.guias_ai_url_fetch_max_redirects,
             )
+            texto_bruto = resultado.get("texto") or ""
+            if not titulo_sugerido and resultado.get("titulo"):
+                titulo_sugerido = str(resultado["titulo"])[:200]
+            url_origem = resultado.get("url_final") or url_origem
+            logger.info(
+                "guias_ai.job.url_fetched grupo_id=%s url=%s tamanho=%s "
+                "titulo_inferido=%s",
+                request.grupo_id,
+                url_origem,
+                len(texto_bruto),
+                bool(titulo_sugerido),
+            )
+
+        if not texto_bruto:
+            raise BadRequestError(
+                "Forneca `texto` ou um `url_origem` valido para criar o guia.",
+            )
+
+        texto_limpo = normalizar_texto(texto_bruto)
+        if len(texto_limpo) < self._settings.guias_ai_text_min_chars:
+            mensagem = (
+                "O conteudo extraido da URL ficou curto demais para gerar um guia."
+                if fonte_texto == "url"
+                else "O texto colado e curto demais para gerar um guia."
+            )
+            raise BadRequestError(mensagem)
         if len(texto_limpo) > self._settings.guias_ai_text_max_chars * 2:
             raise BadRequestError(
                 "O texto colado ultrapassa o limite maximo permitido."
@@ -136,6 +174,12 @@ class GuiasAiUseCase:
             )
             return self._mapear_job(existente)
 
+        resultado_inicial: dict[str, Any] = {}
+        if titulo_sugerido:
+            resultado_inicial["titulo_sugerido"] = titulo_sugerido
+        if fonte_texto == "url":
+            resultado_inicial["fonte_texto"] = "url"
+
         payload: dict[str, Any] = {
             "grupo_id": request.grupo_id,
             "perfil_id": request.perfil_id,
@@ -144,13 +188,13 @@ class GuiasAiUseCase:
             "progresso_percentual": JOB_PROGRESS[JobStatus.CREATED],
             "texto_original": texto_persistido,
             "texto_hash": texto_hash_value,
-            "url_origem": request.url_origem,
-            "resultado": (
-                {"titulo_sugerido": request.titulo_sugerido}
-                if request.titulo_sugerido
-                else {}
+            "url_origem": url_origem,
+            "resultado": resultado_inicial,
+            "mensagem_usuario": (
+                "Baixamos a pagina e estamos comecando a processar."
+                if fonte_texto == "url"
+                else "Recebemos seu texto e estamos comecando a processar."
             ),
-            "mensagem_usuario": "Recebemos seu texto e estamos comecando a processar.",
         }
         if existente and existente.get("guia_id"):
             payload["resultado"] = {
@@ -162,11 +206,12 @@ class GuiasAiUseCase:
         criado = await self._supabase.insert_guia_ai_job(payload=payload)
         job_id = str(criado.get("id", ""))
         logger.info(
-            "guias_ai.job.created job_id=%s grupo_id=%s perfil_id=%s tamanho=%s",
+            "guias_ai.job.created job_id=%s grupo_id=%s perfil_id=%s tamanho=%s fonte=%s",
             job_id,
             request.grupo_id,
             request.perfil_id,
             len(texto_limpo),
+            fonte_texto,
         )
 
         # Background processing — does not block the HTTP request.
