@@ -141,6 +141,10 @@ class JobEtapaProgresso(BaseModel):
 class JobResumoEstatisticas(BaseModel):
     restaurantes_extraidos: int = 0
     restaurantes_salvos: int = 0
+    descartados_separador: int = 0
+    sinalizados_baixa_confianca: int = 0
+    sinalizados_ruido: int = 0
+    nao_encontrados_google: int = 0
     matches_internos: int = 0
     buscas_google: int = 0
     enriquecidos_google: int = 0
@@ -154,6 +158,8 @@ class JobResumoEstatisticas(BaseModel):
     custo_estimado_brl: float | None = None
     duracao_ms: int | None = None
     lugares_criados_automaticamente: int = 0
+    is_ranking: bool = False
+    quantidade_esperada: int | None = None
 
 
 class JobResponse(BaseModel):
