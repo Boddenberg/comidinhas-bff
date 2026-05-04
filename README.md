@@ -158,10 +158,46 @@ Google Maps, sugestoes para o grupo e pendencias claras de revisao opcional.
   O guia e criado com pendencias e o usuario pode resolver depois.
 - Se o LLM falhar, o extractor cai em um parser deterministico.
 - Se o Google Maps falhar/atingir limite, os itens ficam com status
-  `nao_encontrado`/`pendente` e o guia segue.
+  `nao_encontrado`/`pendente` mas continuam no guia com pelo menos
+  o nome importado para o usuario revisar/editar depois.
+- Itens marcados com baixa confianca pelo extrator (`parece_ruido`,
+  `parece_real=false`) NAO sao mais descartados: entram no guia com alertas
+  (`extrator_marcou_como_ruido`, `extrator_baixa_confianca`) para o usuario
+  decidir. So `parece_separador` (titulos de secao tipo "Top 20") sao
+  filtrados, porque nao sao restaurantes.
 - Textos nao gastronomicos (receita, review individual, conteudo nao
   relacionado a comida) terminam com status `invalid_content` e mensagem
   amigavel ao usuario.
+
+### Ordem dos itens (ranking vs ordem do texto)
+
+A pipeline detecta automaticamente se o texto colado e um ranking
+explicito ou nao, e respeita a intencao do usuario:
+
+- **Ranking explicito** (texto tem "TOP 20", numeracao, ou metade dos
+  itens com posicao_ranking detectada): ordena os itens por
+  `posicao_ranking` no guia final.
+- **Lista sem ordem explicita**: preserva a ordem em que os
+  restaurantes aparecem no texto colado (ordem original).
+
+A flag `is_ranking` e gravada em `metadados.is_ranking` no guia e em
+`estatisticas.is_ranking` no job, para o frontend exibir adequadamente.
+
+### Funil observavel (logs)
+
+Para diagnosticar discrepancias entre o texto colado e o guia gerado,
+os logs por job mostram o funil completo:
+
+- `guias_ai.extractor.chunk_summary`: extraidos por chunk + tipo
+- `guias_ai.extractor.merge`: brutos / deduplicados / mantidos / ranking
+- `guias_ai.job.candidatos_filtro`: extraidos / mantidos / separadores /
+  ruido sinalizado / baixa confianca sinalizada
+- `guias_ai.job.itens_descartados`: lista os primeiros 50 nomes descartados
+  e o motivo
+- `guias_ai.job.ordem_detectada`: is_ranking + itens com posicao
+- `guias_ai.places_enricher.nao_encontrado`: nome do item que nao foi
+  encontrado no Google + tentativas de busca
+- `guias_ai.job.funil_final`: numeros agregados de fim de pipeline
 
 ### Privacidade nas sugestoes
 
