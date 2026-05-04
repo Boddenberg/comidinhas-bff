@@ -25,12 +25,18 @@ router = APIRouter(prefix="/guias/ia", tags=["guias-ia"])
     "/imports",
     response_model=JobResponse,
     status_code=202,
-    summary="Cria um job para gerar um guia gastronomico a partir de texto",
+    summary="Cria um job para gerar um guia gastronomico a partir de texto ou URL",
 )
 async def criar_import(
     request: CriarGuiaIaRequest,
     use_case: GuiasAiUseCase = Depends(get_guias_ai_use_case),
 ) -> JobResponse:
+    """Cria um job de importacao.
+
+    Aceita `texto` (string colada) OU `url_origem` (link http/https). Quando
+    so a URL e enviada, o backend baixa a pagina e extrai o texto antes de
+    iniciar o pipeline.
+    """
     return await use_case.criar_job(request=request)
 
 

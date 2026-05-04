@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     guias_ai_auto_create_min_score: float = Field(default=0.85, ge=0.5, le=1.0)
     guias_ai_stream_max_seconds: int = Field(default=240, ge=10, le=900)
     guias_ai_stream_poll_seconds: float = Field(default=1.5, ge=0.2, le=10.0)
+    guias_ai_url_fetch_timeout_seconds: float = Field(default=20.0, ge=2.0, le=120.0)
+    guias_ai_url_fetch_max_bytes: int = Field(default=5_000_000, ge=10_000, le=50_000_000)
+    guias_ai_url_fetch_max_redirects: int = Field(default=5, ge=0, le=20)
 
     supabase_url: str | None = None
     supabase_key: str | None = None

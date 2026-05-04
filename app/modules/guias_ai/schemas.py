@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class JobStatus(str, Enum):
@@ -106,11 +106,14 @@ class CriarGuiaIaRequest(BaseModel):
 
     grupo_id: str = Field(..., min_length=8, max_length=64)
     perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
-    texto: str = Field(..., min_length=10, max_length=400_000)
+    # Aceita texto colado OU url_origem isolada. Pelo menos um e obrigatorio
+    # (validado em deve_ter_texto_ou_url). Quando so a URL e enviada, o
+    # backend baixa a pagina e usa o texto extraido como entrada do pipeline.
+    texto: str | None = Field(default=None, max_length=400_000)
     titulo_sugerido: str | None = Field(default=None, max_length=200)
     url_origem: str | None = Field(default=None, max_length=1000)
 
-    @field_validator("perfil_id", "titulo_sugerido", mode="before")
+    @field_validator("perfil_id", "titulo_sugerido", "texto", mode="before")
     @classmethod
     def vazio_para_none(cls, value: str | None) -> str | None:
         if isinstance(value, str):
@@ -128,6 +131,16 @@ class CriarGuiaIaRequest(BaseModel):
         if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
             raise ValueError("url_origem deve comecar com http:// ou https://")
         return cleaned
+
+    @model_validator(mode="after")
+    def deve_ter_texto_ou_url(self) -> "CriarGuiaIaRequest":
+        if not self.texto and not self.url_origem:
+            raise ValueError(
+                "Informe ao menos `texto` ou `url_origem` para criar o guia."
+            )
+        if self.texto is not None and len(self.texto) < 10:
+            raise ValueError("`texto` precisa ter ao menos 10 caracteres.")
+        return self
 
 
 class JobEtapaProgresso(BaseModel):
