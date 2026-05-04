@@ -131,12 +131,20 @@ class GuideExtractor:
         full_text = texto[: min(len(texto), self._settings.guias_ai_text_max_chars)]
         chunks = self._split_chunks(full_text)
         if len(chunks) <= 1:
-            return await self._extrair_chunk(
+            single = await self._extrair_chunk(
                 full_text,
                 chunk_index=0,
                 total_chunks=1,
                 tracker=tracker,
             )
+            logger.info(
+                "guias_ai.extractor.single_chunk total_chars=%s extraidos=%s tipo=%s confianca=%.2f",
+                len(full_text),
+                len(single.restaurantes),
+                single.tipo_guia_detectado or "desconhecido",
+                single.confianca,
+            )
+            return single
 
         logger.info(
             "guias_ai.extractor.chunked total_chars=%s chunks=%s overlap=%s",
@@ -160,6 +168,15 @@ class GuideExtractor:
             *(run(idx, chunk) for idx, chunk in enumerate(chunks)),
             return_exceptions=False,
         )
+        for idx, partial in enumerate(partials):
+            if isinstance(partial, ExtractedGuide):
+                logger.info(
+                    "guias_ai.extractor.chunk_summary chunk=%s/%s extraidos=%s tipo=%s",
+                    idx + 1,
+                    len(chunks),
+                    len(partial.restaurantes),
+                    partial.tipo_guia_detectado or "desconhecido",
+                )
         merged = self._merge_partials(partials)
         if not merged.restaurantes:
             return self._fallback_deterministico(full_text)
@@ -230,6 +247,8 @@ class GuideExtractor:
         merged_restaurants: list[ExtractedRestaurant] = []
         seen: dict[tuple[str, str | None, str | None], ExtractedRestaurant] = {}
         confidencias: list[float] = []
+        total_brutos = 0
+        deduplicados = 0
 
         # Metadata: pega o primeiro nao-vazio em ordem dos chunks (geralmente o cabecalho aparece no chunk 0).
         meta_titulo: str | None = None
@@ -269,7 +288,15 @@ class GuideExtractor:
             if meta_qty is None and partial.quantidade_esperada:
                 meta_qty = partial.quantidade_esperada
 
-            for restaurant in partial.restaurantes:
+            # Processa itens em ordem do chunk (LLM ja entrega 0-indexado por
+            # `ordem`). Manter essa ordem no append preserva a sequencia do texto
+            # original para guias nao-ranking.
+            chunk_items = sorted(
+                partial.restaurantes,
+                key=lambda r: r.ordem if r.ordem is not None else 0,
+            )
+            total_brutos += len(chunk_items)
+            for restaurant in chunk_items:
                 key = (
                     restaurant.nome_normalizado,
                     (restaurant.cidade or "").strip().lower() or None,
@@ -278,7 +305,6 @@ class GuideExtractor:
                 existing = seen.get(key)
                 if existing is None:
                     # Tambem checa duplicidade so por nome (sem bairro) — overlap entre chunks.
-                    name_only_key = (restaurant.nome_normalizado, None, None)
                     duplicate = next(
                         (
                             value
@@ -299,17 +325,48 @@ class GuideExtractor:
                     seen[key] = restaurant
                     merged_restaurants.append(restaurant)
                 else:
+                    deduplicados += 1
                     self._enrich_existing(existing, restaurant)
 
-        # Normaliza ordem e posicao final.
-        merged_restaurants.sort(
-            key=lambda r: (
-                r.posicao_ranking if r.posicao_ranking is not None else 9_999,
-                r.ordem,
-            )
+        # Detecta se o texto e um ranking. Sinais: tipo "ranking" ou pelo menos
+        # metade dos itens com posicao_ranking explicita.
+        com_ranking = sum(1 for r in merged_restaurants if r.posicao_ranking is not None)
+        is_ranking = (meta_tipo or "").strip().lower() == "ranking" or (
+            len(merged_restaurants) > 0
+            and com_ranking >= max(2, len(merged_restaurants) // 2)
         )
+
+        if is_ranking:
+            # Ranking explicito: ordena por posicao. Itens sem posicao vao para o
+            # fim na ordem de aparicao (preservando contexto).
+            merged_restaurants.sort(
+                key=lambda r: (
+                    r.posicao_ranking if r.posicao_ranking is not None else 10_000 + r.ordem,
+                    r.ordem,
+                )
+            )
+        # Caso contrario, mantem a ordem de insercao (ordem do texto original).
+
+        # Renumera ordem para refletir a posicao final apos o merge.
         for new_idx, restaurant in enumerate(merged_restaurants):
             restaurant.ordem = new_idx
+
+        truncado = False
+        limite = self._settings.guias_ai_max_items_per_guide
+        if len(merged_restaurants) > limite:
+            truncado = True
+
+        logger.info(
+            "guias_ai.extractor.merge total_chunks=%s brutos=%s deduplicados=%s mantidos=%s "
+            "ranking=%s tipo=%s truncado_para=%s",
+            len([p for p in partials if isinstance(p, ExtractedGuide)]),
+            total_brutos,
+            deduplicados,
+            len(merged_restaurants),
+            is_ranking,
+            meta_tipo or "desconhecido",
+            limite if truncado else len(merged_restaurants),
+        )
 
         return ExtractedGuide(
             titulo=meta_titulo,
@@ -323,7 +380,7 @@ class GuideExtractor:
             tipo_guia_detectado=meta_tipo,
             quantidade_esperada=meta_qty,
             confianca=(sum(confidencias) / len(confidencias)) if confidencias else 0.4,
-            restaurantes=merged_restaurants[: self._settings.guias_ai_max_items_per_guide],
+            restaurantes=merged_restaurants[:limite],
         )
 
     @staticmethod
@@ -379,24 +436,32 @@ class GuideExtractor:
         restaurantes_raw = payload.get("restaurantes") or []
         restaurantes: list[ExtractedRestaurant] = []
         seen: set[tuple[str, str | None, str | None]] = set()
+        descartados_separador = 0
+        descartados_dedup = 0
+        descartados_invalido = 0
 
         for index, item in enumerate(restaurantes_raw):
             if not isinstance(item, dict):
+                descartados_invalido += 1
                 continue
             try:
                 nome = str(item.get("nome_original") or "").strip()
                 if not nome:
+                    descartados_invalido += 1
                     continue
                 if bool(item.get("parece_separador")) and not bool(item.get("parece_real")):
+                    descartados_separador += 1
                     continue
                 normalizado = normalizar_nome(nome)
                 if not normalizado:
+                    descartados_invalido += 1
                     continue
 
                 cidade = (item.get("cidade") or None)
                 bairro = (item.get("bairro") or None)
                 key = (normalizado, cidade, bairro)
                 if key in seen:
+                    descartados_dedup += 1
                     continue
                 seen.add(key)
 
@@ -427,7 +492,18 @@ class GuideExtractor:
                     break
             except Exception:  # pragma: no cover - defensivo
                 logger.exception("guias_ai.extractor.skip_invalid_item")
+                descartados_invalido += 1
                 continue
+
+        if descartados_separador or descartados_dedup or descartados_invalido:
+            logger.info(
+                "guias_ai.extractor.mapear brutos=%s mantidos=%s separador=%s dedup_chunk=%s invalidos=%s",
+                len(restaurantes_raw),
+                len(restaurantes),
+                descartados_separador,
+                descartados_dedup,
+                descartados_invalido,
+            )
 
         confianca = _clamp_float(payload.get("confianca"), 0.5)
         return ExtractedGuide(
