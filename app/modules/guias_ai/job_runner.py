@@ -26,6 +26,7 @@ from app.modules.guias_ai.sanitizer import (
 from app.modules.guias_ai.schemas import (
     EnrichedItem,
     ExtractedGuide,
+    ExtractedRestaurant,
     JobStatus,
     JOB_PROGRESS,
     JOB_USER_LABEL,
@@ -243,12 +244,54 @@ class JobRunner:
             mensagem="Identificando restaurantes.",
         )
 
-        # Filtra ruido evidente
-        candidatos = [
-            r
-            for r in extracted.restaurantes
-            if not r.parece_separador and r.parece_real and not r.parece_ruido
-        ]
+        # Filosofia: capturar tudo que o cliente colou. So descartamos "separadores"
+        # (titulos de secao do texto, tipo "TOP 20"), que nao sao restaurantes.
+        # Itens marcados como ruido/baixa confianca pelo extrator entram com alertas
+        # para o usuario revisar — preferimos um falso positivo a perder um item real.
+        total_extraidos = len(extracted.restaurantes)
+        candidatos: list[ExtractedRestaurant] = []
+        descartados_separador = 0
+        sinalizados_ruido = 0
+        sinalizados_baixa_confianca = 0
+        descartes_log: list[dict[str, Any]] = []
+
+        for r in extracted.restaurantes:
+            if r.parece_separador:
+                descartados_separador += 1
+                if len(descartes_log) < 50:
+                    descartes_log.append(
+                        {"nome": r.nome_original, "motivo": "parece_separador"}
+                    )
+                continue
+            if r.parece_ruido and "extrator_marcou_como_ruido" not in r.alertas:
+                r.alertas.append("extrator_marcou_como_ruido")
+                sinalizados_ruido += 1
+            if not r.parece_real and "extrator_baixa_confianca" not in r.alertas:
+                r.alertas.append("extrator_baixa_confianca")
+                sinalizados_baixa_confianca += 1
+            candidatos.append(r)
+
+        logger.info(
+            "guias_ai.job.candidatos_filtro job_id=%s extraidos=%s mantidos=%s "
+            "separadores=%s ruido_sinalizado=%s baixa_confianca_sinalizada=%s "
+            "tipo=%s confianca_extracao=%.2f confianca_classificacao=%.2f",
+            job_id,
+            total_extraidos,
+            len(candidatos),
+            descartados_separador,
+            sinalizados_ruido,
+            sinalizados_baixa_confianca,
+            extracted.tipo_guia_detectado or "desconhecido",
+            extracted.confianca,
+            classificacao.confianca,
+        )
+        if descartes_log:
+            logger.info(
+                "guias_ai.job.itens_descartados job_id=%s descartes=%s",
+                job_id,
+                descartes_log,
+            )
+
         if not candidatos:
             await self._invalid(
                 job_id=job_id,
@@ -273,8 +316,43 @@ class JobRunner:
                 return
             alertas.append("guia_com_poucos_itens")
 
-        # Limita
-        candidatos = candidatos[: self._settings.guias_ai_max_items_per_guide]
+        # Limita ao maximo configurado por guia (no caso de textos com centenas de itens).
+        if len(candidatos) > self._settings.guias_ai_max_items_per_guide:
+            logger.info(
+                "guias_ai.job.candidatos_truncados job_id=%s antes=%s depois=%s",
+                job_id,
+                len(candidatos),
+                self._settings.guias_ai_max_items_per_guide,
+            )
+            alertas.append("guia_truncado_por_limite")
+            candidatos = candidatos[: self._settings.guias_ai_max_items_per_guide]
+
+        # Identifica se e um ranking explicito para preservar a ordem do usuario.
+        # Sinais: tipo_guia_detectado=="ranking" OU pelo menos metade dos itens
+        # tem posicao_ranking explicita.
+        com_ranking = sum(1 for r in candidatos if r.posicao_ranking is not None)
+        is_ranking = (extracted.tipo_guia_detectado or "").strip().lower() == "ranking" or (
+            len(candidatos) > 0 and com_ranking >= max(2, len(candidatos) // 2)
+        )
+        if is_ranking:
+            # Ranking: ordena por posicao_ranking, com fallback para a ordem do
+            # texto. Itens sem posicao vao depois dos que tem, preservando contexto.
+            candidatos.sort(
+                key=lambda r: (
+                    r.posicao_ranking if r.posicao_ranking is not None else 10_000 + r.ordem,
+                    r.ordem,
+                )
+            )
+        # Caso contrario, mantem a ordem do texto original (ordem 0..n vinda do LLM).
+        logger.info(
+            "guias_ai.job.ordem_detectada job_id=%s is_ranking=%s itens_com_posicao=%s/%s "
+            "tipo_guia_detectado=%s",
+            job_id,
+            is_ranking,
+            com_ranking,
+            len(candidatos),
+            extracted.tipo_guia_detectado or "desconhecido",
+        )
 
         # 2.1 Cria o guia "esqueleto" cedo para que o frontend consiga
         # abrir a pagina enquanto o pipeline ainda enriquece os itens.
@@ -286,6 +364,7 @@ class JobRunner:
             texto_hash_value=texto_hash_value,
             classificacao=classificacao,
             perfil_id=perfil_id,
+            is_ranking=is_ranking,
         )
         if guia_id_parcial:
             await self._supabase.update_guia_ai_job(
@@ -534,6 +613,8 @@ class JobRunner:
                 "metadados": {
                     "tipo_detectado": classificacao.tipo.value,
                     "tipo_guia_detectado": extracted.tipo_guia_detectado,
+                    "is_ranking": is_ranking,
+                    "ordem_origem": "ranking" if is_ranking else "texto_original",
                     "quantidade_esperada": extracted.quantidade_esperada,
                     "confianca_classificacao": classificacao.confianca,
                     "confianca_extracao": extracted.confianca,
@@ -583,9 +664,18 @@ class JobRunner:
         # 8. Conclusao
         duracao_ms = int((time.perf_counter() - started_at) * 1000)
         cost_snapshot = tracker.snapshot()
+        nao_encontrados_google = sum(
+            1
+            for item in items_finais
+            if item.status_matching == StatusMatching.NAO_ENCONTRADO
+        )
         estatisticas = {
-            "restaurantes_extraidos": len(extracted.restaurantes),
+            "restaurantes_extraidos": total_extraidos,
             "restaurantes_salvos": len(items_finais),
+            "descartados_separador": descartados_separador,
+            "sinalizados_baixa_confianca": sinalizados_baixa_confianca,
+            "sinalizados_ruido": sinalizados_ruido,
+            "nao_encontrados_google": nao_encontrados_google,
             "matches_internos": matches_internos,
             "buscas_google": calls_done,
             "enriquecidos_google": sum(
@@ -608,7 +698,25 @@ class JobRunner:
             "custo_estimado_usd": cost_snapshot["custo_estimado_usd"],
             "custo_estimado_brl": cost_snapshot["custo_estimado_brl"],
             "lugares_criados_automaticamente": len(lugares_auto_criados),
+            "is_ranking": is_ranking,
+            "quantidade_esperada": extracted.quantidade_esperada,
         }
+        logger.info(
+            "guias_ai.job.funil_final job_id=%s extraidos=%s salvos=%s separador=%s "
+            "ruido=%s baixa_confianca=%s matches_internos=%s enriquecidos_google=%s "
+            "nao_encontrados_google=%s pendencias=%s is_ranking=%s",
+            job_id,
+            total_extraidos,
+            len(items_finais),
+            descartados_separador,
+            sinalizados_ruido,
+            sinalizados_baixa_confianca,
+            matches_internos,
+            estatisticas["enriquecidos_google"],
+            nao_encontrados_google,
+            pendencias,
+            is_ranking,
+        )
 
         final_status = (
             JobStatus.COMPLETED
@@ -623,6 +731,8 @@ class JobRunner:
             criados_automaticamente=len(lugares_auto_criados),
             pendencias=pendencias,
             tem_capa=bool(capa),
+            nao_encontrados_google=nao_encontrados_google,
+            is_ranking=is_ranking,
         )
 
         await self._supabase.update_guia_ai_job(
@@ -869,6 +979,16 @@ class JobRunner:
         final_status = (
             JobStatus.COMPLETED if pendencias == 0 else JobStatus.COMPLETED_WITH_WARNINGS
         )
+        nao_encontrados_google_resumir = sum(
+            1
+            for item in items_finais
+            if item.status_matching == StatusMatching.NAO_ENCONTRADO
+        )
+        is_ranking_resumir = bool(
+            (guia.get("metadados") or {}).get("is_ranking")
+            if isinstance(guia.get("metadados"), dict)
+            else False
+        )
         mensagem_final = self._montar_mensagem_final(
             total=len(items_finais),
             matches_internos=matches_internos,
@@ -881,6 +1001,8 @@ class JobRunner:
             criados_automaticamente=len(lugares_auto_criados),
             pendencias=pendencias,
             tem_capa=bool(capa),
+            nao_encontrados_google=nao_encontrados_google_resumir,
+            is_ranking=is_ranking_resumir,
         )
 
         await self._supabase.update_guia_ai_job(
@@ -945,6 +1067,7 @@ class JobRunner:
         texto_hash_value: str,
         classificacao,
         perfil_id: str | None,
+        is_ranking: bool = False,
     ) -> str | None:
         nome_guia = (
             extracted.titulo
@@ -974,6 +1097,10 @@ class JobRunner:
             "sugestoes": {},
             "metadados": {
                 "tipo_detectado": classificacao.tipo.value,
+                "tipo_guia_detectado": extracted.tipo_guia_detectado,
+                "is_ranking": is_ranking,
+                "ordem_origem": "ranking" if is_ranking else "texto_original",
+                "quantidade_esperada": extracted.quantidade_esperada,
                 "confianca_classificacao": classificacao.confianca,
                 "confianca_extracao": extracted.confianca,
                 "prompt_version": self._settings.guias_ai_prompt_version,
@@ -1408,11 +1535,16 @@ class JobRunner:
         criados_automaticamente: int,
         pendencias: int,
         tem_capa: bool,
+        nao_encontrados_google: int = 0,
+        is_ranking: bool = False,
     ) -> str:
         if total == 0:
             return "Nao consegui identificar restaurantes neste texto."
 
-        partes = [f"Seu guia foi criado com {total} restaurantes."]
+        if is_ranking:
+            partes = [f"Seu guia foi criado com {total} restaurantes na ordem do ranking."]
+        else:
+            partes = [f"Seu guia foi criado com {total} restaurantes."]
         if matches_internos:
             partes.append(
                 f"{matches_internos} ja estavam no Comidinhas."
@@ -1425,10 +1557,17 @@ class JobRunner:
             partes.append(
                 f"Adicionamos {criados_automaticamente} novos restaurantes ao seu grupo."
             )
-        if pendencias:
+        if nao_encontrados_google:
             partes.append(
-                f"{pendencias} {'precisa' if pendencias == 1 else 'precisam'} de revisao."
+                f"{nao_encontrados_google} {'ficou' if nao_encontrados_google == 1 else 'ficaram'} "
+                "so com o nome (nao achamos no Google Maps) e voce pode revisar depois."
             )
+        if pendencias and pendencias != nao_encontrados_google:
+            outros_pendentes = pendencias - nao_encontrados_google
+            if outros_pendentes > 0:
+                partes.append(
+                    f"{outros_pendentes} {'precisa' if outros_pendentes == 1 else 'precisam'} de revisao."
+                )
         if tem_capa:
             partes.append("Foto de capa adicionada automaticamente.")
         return " ".join(partes)
