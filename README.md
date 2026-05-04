@@ -132,14 +132,18 @@ pytest
 ## Criar guia com IA
 
 A feature "Criar guia com IA" permite que o usuario cole um texto desestruturado
-copiado da internet (ranking, materia, lista, guia gastronomico) e o backend
-monte um guia completo dentro do Comidinhas, com restaurantes, fotos, dados do
-Google Maps, sugestoes para o grupo e pendencias claras de revisao opcional.
+copiado da internet (ranking, materia, lista, guia gastronomico) **ou apenas
+um link** e o backend monte um guia completo dentro do Comidinhas, com
+restaurantes, fotos, dados do Google Maps, sugestoes para o grupo e
+pendencias claras de revisao opcional.
 
 ### Como funciona
 
-1. O frontend chama `POST /api/v1/guias/ia/imports` com o texto e recebe
-   imediatamente um `job_id` (HTTP 202). Nada bloqueia o request.
+1. O frontend chama `POST /api/v1/guias/ia/imports` com `texto` OU
+   `url_origem` (pelo menos um e obrigatorio) e recebe imediatamente um
+   `job_id` (HTTP 202). Quando so a URL e enviada, o backend baixa a
+   pagina, extrai o texto e usa o `<title>` como `titulo_sugerido` antes
+   de iniciar o pipeline.
 2. O backend executa o pipeline em segundo plano (asyncio task), atualizando
    o estado do job a cada etapa: `sanitizing_text`, `classifying_content`,
    `extracting_guide_metadata`, `extracting_restaurants`,
@@ -168,6 +172,28 @@ Google Maps, sugestoes para o grupo e pendencias claras de revisao opcional.
 - Textos nao gastronomicos (receita, review individual, conteudo nao
   relacionado a comida) terminam com status `invalid_content` e mensagem
   amigavel ao usuario.
+
+### Importar a partir de uma URL
+
+O frontend pode mandar **so o link** da materia / ranking / blog post no
+campo `url_origem` (omitindo `texto`). O backend baixa a pagina via
+HTTPS, extrai o conteudo textual (descartando script/style/nav/footer),
+infere o `<title>` como `titulo_sugerido` e segue o pipeline normal.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/guias/ia/imports \
+  -H "Content-Type: application/json" \
+  -d '{"grupo_id":"abc12345","url_origem":"https://blog.exemplo.com/melhores-pizzarias-sp"}'
+```
+
+Limites e protecoes:
+
+- Apenas URLs `http://` / `https://` (FTP, file, data, etc. sao recusados).
+- IPs privados, loopback, link-local e `localhost` sao bloqueados (anti-SSRF).
+- Timeout configuravel (`GUIAS_AI_URL_FETCH_TIMEOUT_SECONDS`, default 20s).
+- Tamanho maximo configuravel (`GUIAS_AI_URL_FETCH_MAX_BYTES`, default 5MB —
+  truncado se a pagina exceder).
+- Erros de rede / status >= 400 viram HTTP 502 com mensagem clara.
 
 ### Ordem dos itens (ranking vs ordem do texto)
 
@@ -216,6 +242,8 @@ e agregada ("tempo medio de deslocamento baixo para o grupo"), nunca
 - `GUIAS_AI_MAX_PLACES_LOOKUPS_PER_JOB` / `GUIAS_AI_PLACES_CONCURRENCY`
 - `GUIAS_AI_MATCH_STRONG_SCORE` / `GUIAS_AI_MATCH_WEAK_SCORE`
 - `GUIAS_AI_STEP_MAX_ATTEMPTS` / `GUIAS_AI_JOB_MAX_SECONDS`
+- `GUIAS_AI_URL_FETCH_TIMEOUT_SECONDS` / `GUIAS_AI_URL_FETCH_MAX_BYTES` /
+  `GUIAS_AI_URL_FETCH_MAX_REDIRECTS` (modo URL-only)
 - `OPENAI_API_KEY` (obrigatorio) e `GOOGLE_MAPS_API_KEY` (recomendado).
 
 ### APIs do Google usadas
