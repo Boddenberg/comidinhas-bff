@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     guias_ai_classifier_model: str = "gpt-4o-mini"
     guias_ai_extractor_model: str = "gpt-4o-mini"
     guias_ai_text_min_chars: int = Field(default=80, ge=10, le=10_000)
-    guias_ai_text_max_chars: int = Field(default=80_000, ge=1_000, le=400_000)
+    guias_ai_text_max_chars: int = Field(default=400_000, ge=1_000, le=400_000)
     guias_ai_max_items_per_guide: int = Field(default=80, ge=1, le=200)
     guias_ai_min_items_to_create_guide: int = Field(default=3, ge=1, le=50)
     guias_ai_max_places_lookups_per_job: int = Field(default=80, ge=0, le=300)

@@ -126,7 +126,7 @@ class GuiasAiUseCase:
                 else "O texto colado e curto demais para gerar um guia."
             )
             raise BadRequestError(mensagem)
-        if len(texto_limpo) > self._settings.guias_ai_text_max_chars * 2:
+        if len(texto_limpo) > self._settings.guias_ai_text_max_chars:
             raise BadRequestError(
                 "O texto colado ultrapassa o limite maximo permitido."
             )
@@ -144,6 +144,22 @@ class GuiasAiUseCase:
                 redigidos,
             )
 
+        texto_hash_value = hash_texto(texto_limpo[: self._settings.guias_ai_text_max_chars])
+        existente = await self._supabase.get_guia_ai_job_by_hash(
+            grupo_id=request.grupo_id,
+            texto_hash=texto_hash_value,
+        )
+
+        if existente and self._should_reuse_existing_job(existente):
+            logger.info(
+                "guias_ai.job.idempotent_hit grupo_id=%s reused_job_id=%s",
+                request.grupo_id,
+                existente.get("id"),
+            )
+            return self._mapear_job(existente)
+        if existente and self._is_stale_active_job(existente):
+            await self._watchdog_silencioso()
+
         await self._enforce_rate_limit(
             grupo_id=request.grupo_id,
             perfil_id=request.perfil_id,
@@ -155,24 +171,6 @@ class GuiasAiUseCase:
             self._watchdog_silencioso(),
             name="guias_ai_opportunistic_watchdog",
         )
-
-        texto_hash_value = hash_texto(texto_limpo[: self._settings.guias_ai_text_max_chars])
-        existente = await self._supabase.get_guia_ai_job_by_hash(
-            grupo_id=request.grupo_id,
-            texto_hash=texto_hash_value,
-        )
-
-        if (
-            existente
-            and existente.get("guia_id")
-            and self._is_recent(existente.get("criado_em"))
-        ):
-            logger.info(
-                "guias_ai.job.idempotent_hit grupo_id=%s reused_job_id=%s",
-                request.grupo_id,
-                existente.get("id"),
-            )
-            return self._mapear_job(existente)
 
         resultado_inicial: dict[str, Any] = {}
         if titulo_sugerido:
@@ -459,6 +457,7 @@ class GuiasAiUseCase:
         if guia is None:
             raise NotFoundError("Guia nao encontrado.")
         itens = await self._supabase.list_guia_itens(guia_id=guia_id)
+        self._log_guia_item_diagnostics(guia_id=guia_id, itens=itens)
         return self._mapear_guia(guia, itens)
 
     async def atualizar_metadados(
@@ -855,6 +854,35 @@ class GuiasAiUseCase:
         delta = datetime.now(timezone.utc) - parsed
         return delta.total_seconds() < self._settings.guias_ai_idempotency_window_hours * 3600
 
+    def _should_reuse_existing_job(self, raw: dict[str, Any]) -> bool:
+        if not self._is_recent(raw.get("criado_em")):
+            return False
+        try:
+            status = JobStatus(str(raw.get("status") or JobStatus.CREATED.value))
+        except ValueError:
+            return False
+        if status in (JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS):
+            return bool(raw.get("guia_id"))
+        if self._is_stale_active_job(raw):
+            return False
+        return status not in TERMINAL_JOB_STATUSES
+
+    def _is_stale_active_job(self, raw: dict[str, Any]) -> bool:
+        try:
+            status = JobStatus(str(raw.get("status") or JobStatus.CREATED.value))
+        except ValueError:
+            return False
+        if status in TERMINAL_JOB_STATUSES:
+            return False
+
+        parsed = _parse_dt(raw.get("atualizado_em") or raw.get("criado_em"))
+        if parsed is None:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - parsed
+        return delta.total_seconds() > self._settings.guias_ai_watchdog_max_silence_seconds
+
     @staticmethod
     def _log_task_outcome(task: asyncio.Task[Any]) -> None:
         if task.cancelled():
@@ -1001,6 +1029,53 @@ class GuiasAiUseCase:
             trecho_original=item.get("trecho_original"),
             lugar_id=item.get("lugar_id"),
             extra=extra,
+        )
+
+    @staticmethod
+    def _log_guia_item_diagnostics(
+        *,
+        guia_id: str,
+        itens: list[dict[str, Any]],
+    ) -> None:
+        total = len(itens)
+        if not total:
+            logger.info("guias_ai.guia.items_diagnostics guia_id=%s total=0", guia_id)
+            return
+
+        ordens: dict[int, int] = {}
+        sem_foto = 0
+        sem_maps = 0
+        placeholders_iniciais = 0
+        seen_enriched = False
+        duplicate_orders: list[int] = []
+
+        for row in itens:
+            if not isinstance(row, dict):
+                continue
+            ordem_raw = row.get("ordem")
+            if isinstance(ordem_raw, int):
+                ordens[ordem_raw] = ordens.get(ordem_raw, 0) + 1
+            has_photo = isinstance(row.get("foto_url"), str) and bool(str(row.get("foto_url")).strip())
+            has_maps = isinstance(row.get("google_maps_uri"), str) and bool(str(row.get("google_maps_uri")).strip())
+            if not has_photo:
+                sem_foto += 1
+            if not has_maps:
+                sem_maps += 1
+            if has_photo or has_maps or row.get("place_id"):
+                seen_enriched = True
+            elif not seen_enriched:
+                placeholders_iniciais += 1
+
+        duplicate_orders = sorted(ordem for ordem, count in ordens.items() if count > 1)
+        logger.info(
+            "guias_ai.guia.items_diagnostics guia_id=%s total=%s sem_foto=%s sem_maps=%s duplicate_orders=%s placeholders_iniciais=%s first_duplicate_orders=%s",
+            guia_id,
+            total,
+            sem_foto,
+            sem_maps,
+            len(duplicate_orders),
+            placeholders_iniciais,
+            duplicate_orders[:10],
         )
 
 

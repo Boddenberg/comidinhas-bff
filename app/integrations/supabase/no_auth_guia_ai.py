@@ -131,7 +131,7 @@ class SupabaseNoAuthGuiaAiMixin:
             params=[
                 ("grupo_id", f"eq.{grupo_id}"),
                 ("texto_hash", f"eq.{texto_hash}"),
-                ("status", "in.(completed,completed_with_warnings)"),
+                ("status", "not.in.(invalid_content,failed,cancelled)"),
                 ("select", "*"),
                 ("order", "criado_em.desc"),
                 ("limit", "1"),
@@ -173,7 +173,7 @@ class SupabaseNoAuthGuiaAiMixin:
             params=[
                 ("guia_id", f"eq.{guia_id}"),
                 ("select", "*"),
-                ("order", "ordem.asc"),
+                ("order", "ordem.asc,criado_em.asc,id.asc"),
             ],
             context="guia_itens_list",
         )
