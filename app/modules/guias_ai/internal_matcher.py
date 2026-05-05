@@ -23,7 +23,10 @@ class InternalMatcher:
         try:
             rows, _ = await self._client.list_lugares(
                 grupo_id=grupo_id,
-                select="id,nome,categoria,bairro,cidade,status,favorito,extra,imagem_capa",
+                select=(
+                    "id,nome,categoria,bairro,cidade,faixa_preco,link,status,"
+                    "favorito,extra,imagem_capa,fotos"
+                ),
                 filters=[],
                 sort_field="criado_em",
                 sort_descending=True,
@@ -52,9 +55,12 @@ class InternalMatcher:
                     "categoria": row.get("categoria"),
                     "bairro": row.get("bairro"),
                     "cidade": row.get("cidade"),
+                    "faixa_preco": row.get("faixa_preco"),
+                    "link": row.get("link"),
                     "status": row.get("status"),
                     "favorito": bool(row.get("favorito") or False),
                     "imagem_capa": row.get("imagem_capa"),
+                    "fotos": row.get("fotos") if isinstance(row.get("fotos"), list) else [],
                     "place_id": place_id,
                     "extra": extra,
                     # Latitude/longitude vivem em `extra` quando o lugar foi salvo

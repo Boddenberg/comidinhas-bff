@@ -376,10 +376,20 @@ class JobRunner:
         # usuario abra o guia e veja todos os cards (com nome, posicao, bairro)
         # mesmo antes do enriquecimento por Google completar.
         item_ids: dict[int, str] = {}
+        initial_items_insert_attempted = False
         if guia_id_parcial:
+            initial_items_insert_attempted = True
             item_ids = await self._inserir_itens_iniciais(
                 guia_id=guia_id_parcial,
                 candidatos=candidatos,
+            )
+            logger.info(
+                "guias_ai.job.initial_item_id_coverage job_id=%s guia_id=%s candidatos=%s ids=%s missing=%s",
+                job_id,
+                guia_id_parcial,
+                len(candidatos),
+                len(item_ids),
+                len(candidatos) - len(item_ids),
             )
 
         # 3. Match interno
@@ -402,18 +412,10 @@ class JobRunner:
         for index, restaurant in enumerate(candidatos):
             internal_lugar, internal_score, internal_status = matches[index]
             if internal_status == StatusMatching.ENCONTRADO_INTERNO and internal_lugar:
-                enriched = EnrichedItem(
-                    extracted=restaurant,
-                    place_id=internal_lugar.get("place_id"),
-                    nome_oficial=internal_lugar.get("nome"),
-                    bairro_normalizado=internal_lugar.get("bairro"),
-                    cidade_normalizada=internal_lugar.get("cidade"),
-                    foto_url=internal_lugar.get("imagem_capa"),
-                    confianca_enriquecimento=internal_score,
-                    status_matching=StatusMatching.ENCONTRADO_INTERNO,
-                    score_matching=internal_score,
-                    lugar_id=internal_lugar.get("id"),
-                    lugar_existente=internal_lugar,
+                enriched = self._build_internal_enriched_item(
+                    restaurant=restaurant,
+                    internal_lugar=internal_lugar,
+                    internal_score=internal_score,
                 )
                 items_finais[index] = enriched
                 await self._patch_item_enriquecido(
@@ -431,6 +433,7 @@ class JobRunner:
             (index, restaurant)
             for index, restaurant in enumerate(candidatos)
             if matches[index][2] != StatusMatching.ENCONTRADO_INTERNO
+            or self._needs_google_hydration(items_finais[index])
         ]
 
         calls_done = 0
@@ -470,6 +473,18 @@ class JobRunner:
                     photos_found += 1
                     tracker.record_photo()
                 enriched = self._aplicar_match_parcial(enriched, matches[index])
+                logger.info(
+                    "guias_ai.job.google_item_result job_id=%s index=%s ordem=%s nome=%s status=%s has_photo=%s has_maps=%s calls=%s internal_status=%s",
+                    job_id,
+                    index,
+                    enriched.extracted.ordem,
+                    enriched.extracted.nome_original[:80],
+                    enriched.status_matching.value,
+                    bool(enriched.foto_url),
+                    bool(enriched.google_maps_uri),
+                    calls,
+                    matches[index][2].value,
+                )
                 items_finais[index] = enriched
                 await self._patch_item_enriquecido(
                     item_id=item_ids.get(index),
@@ -646,20 +661,15 @@ class JobRunner:
 
         # Os itens ja foram inseridos incrementalmente. Se o guia teve que ser
         # criado tarde (caminho de fallback), faz o bulk insert agora.
-        if guia_id and not item_ids:
-            itens_payload = [
-                self._build_item_payload(guia_id=guia_id, ordem=index, item=item)
-                for index, item in enumerate(items_finais)
-            ]
-            try:
-                await self._supabase.insert_guia_itens(items=itens_payload)
-            except ExternalServiceError as exc:
-                logger.warning(
-                    "guias_ai.job.insert_itens_failed job_id=%s reason=%s",
-                    job_id,
-                    exc.message,
-                )
-                alertas.append("falha_ao_persistir_itens")
+        if guia_id:
+            item_ids = await self._persistir_itens_finais(
+                job_id=job_id,
+                guia_id=guia_id,
+                item_ids=item_ids,
+                items_finais=items_finais,
+                initial_items_insert_attempted=initial_items_insert_attempted,
+                alertas=alertas,
+            )
 
         # 8. Conclusao
         duracao_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1245,6 +1255,115 @@ class JobRunner:
             },
         }
 
+    async def _persistir_itens_finais(
+        self,
+        *,
+        job_id: str,
+        guia_id: str,
+        item_ids: dict[int, str],
+        items_finais: list[EnrichedItem],
+        initial_items_insert_attempted: bool,
+        alertas: list[str],
+    ) -> dict[int, str]:
+        if len(item_ids) < len(items_finais):
+            recovered = await self._carregar_item_ids_por_ordem(guia_id=guia_id)
+            if recovered:
+                item_ids = {**recovered, **item_ids}
+                logger.info(
+                    "guias_ai.job.final_item_ids_recovered job_id=%s guia_id=%s recovered=%s coverage=%s/%s",
+                    job_id,
+                    guia_id,
+                    len(recovered),
+                    len(item_ids),
+                    len(items_finais),
+                )
+                for index, item in enumerate(items_finais):
+                    await self._patch_item_enriquecido(
+                        item_id=item_ids.get(index),
+                        item=item,
+                    )
+
+        if not item_ids:
+            if initial_items_insert_attempted:
+                logger.error(
+                    "guias_ai.job.skip_full_bulk_insert_without_item_ids job_id=%s guia_id=%s total=%s reason=initial_insert_attempted",
+                    job_id,
+                    guia_id,
+                    len(items_finais),
+                )
+                alertas.append("itens_iniciais_sem_ids_para_patch")
+                return item_ids
+
+            itens_payload = [
+                self._build_item_payload(guia_id=guia_id, ordem=index, item=item)
+                for index, item in enumerate(items_finais)
+            ]
+            try:
+                await self._supabase.insert_guia_itens(items=itens_payload)
+                logger.info(
+                    "guias_ai.job.final_bulk_inserted job_id=%s guia_id=%s total=%s",
+                    job_id,
+                    guia_id,
+                    len(itens_payload),
+                )
+            except ExternalServiceError as exc:
+                logger.warning(
+                    "guias_ai.job.insert_itens_failed job_id=%s reason=%s",
+                    job_id,
+                    exc.message,
+                )
+                alertas.append("falha_ao_persistir_itens")
+            return item_ids
+
+        missing_indexes = [
+            index for index in range(len(items_finais)) if index not in item_ids
+        ]
+        if not missing_indexes:
+            return item_ids
+
+        logger.warning(
+            "guias_ai.job.missing_item_ids_before_final_insert job_id=%s guia_id=%s missing=%s sample=%s",
+            job_id,
+            guia_id,
+            len(missing_indexes),
+            missing_indexes[:10],
+        )
+        if initial_items_insert_attempted:
+            alertas.append("alguns_itens_sem_ids_para_patch")
+            logger.error(
+                "guias_ai.job.skip_missing_bulk_insert_after_initial_insert job_id=%s guia_id=%s missing=%s",
+                job_id,
+                guia_id,
+                len(missing_indexes),
+            )
+            return item_ids
+
+        itens_payload = [
+            self._build_item_payload(
+                guia_id=guia_id,
+                ordem=index,
+                item=items_finais[index],
+            )
+            for index in missing_indexes
+        ]
+        try:
+            await self._supabase.insert_guia_itens(items=itens_payload)
+            logger.info(
+                "guias_ai.job.final_missing_inserted job_id=%s guia_id=%s total=%s sample=%s",
+                job_id,
+                guia_id,
+                len(itens_payload),
+                missing_indexes[:10],
+            )
+        except ExternalServiceError as exc:
+            logger.warning(
+                "guias_ai.job.insert_missing_itens_failed job_id=%s reason=%s",
+                job_id,
+                exc.message,
+            )
+            alertas.append("falha_ao_persistir_itens")
+        return item_ids
+
     async def _inserir_itens_iniciais(
         self,
         *,
@@ -1271,6 +1390,12 @@ class JobRunner:
             }
             for index, restaurant in enumerate(candidatos)
         ]
+        logger.info(
+            "guias_ai.job.initial_items_insert_start guia_id=%s requested=%s sample=%s",
+            guia_id,
+            len(payload),
+            [item["nome_importado"] for item in payload[:5]],
+        )
         try:
             inseridos = await self._supabase.insert_guia_itens(items=payload)
         except ExternalServiceError as exc:
@@ -1288,10 +1413,80 @@ class JobRunner:
             if isinstance(row, dict) and row.get("id"):
                 ids[index] = str(row["id"])
         logger.info(
+            "guias_ai.job.initial_items_insert_response guia_id=%s requested=%s returned=%s ids=%s",
+            guia_id,
+            len(candidatos),
+            len(inseridos),
+            len(ids),
+        )
+        if len(ids) < len(candidatos):
+            recovered = await self._carregar_item_ids_por_ordem(guia_id=guia_id)
+            if recovered:
+                ids = {**recovered, **ids}
+                logger.info(
+                    "guias_ai.job.initial_item_ids_recovered guia_id=%s recovered=%s coverage=%s/%s",
+                    guia_id,
+                    len(recovered),
+                    len(ids),
+                    len(candidatos),
+                )
+            else:
+                logger.warning(
+                    "guias_ai.job.initial_item_ids_missing guia_id=%s requested=%s returned=%s ids=%s",
+                    guia_id,
+                    len(candidatos),
+                    len(inseridos),
+                    len(ids),
+                )
+        logger.info(
             "guias_ai.job.initial_items_inserted guia_id=%s total=%s",
             guia_id,
             len(ids),
         )
+        return ids
+
+    async def _carregar_item_ids_por_ordem(self, *, guia_id: str) -> dict[int, str]:
+        try:
+            rows = await self._supabase.list_guia_itens(guia_id=guia_id)
+        except ExternalServiceError as exc:
+            logger.warning(
+                "guias_ai.job.load_item_ids_failed guia_id=%s reason=%s",
+                guia_id,
+                exc.message,
+            )
+            return {}
+        except Exception:
+            logger.exception("guias_ai.job.load_item_ids_unexpected guia_id=%s", guia_id)
+            return {}
+
+        ids: dict[int, str] = {}
+        duplicates = 0
+        without_order = 0
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            ordem = _int_or_none(row.get("ordem"))
+            if ordem is None:
+                without_order += 1
+                continue
+            if ordem in ids:
+                duplicates += 1
+                continue
+            ids[ordem] = str(row["id"])
+        logger.info(
+            "guias_ai.job.item_ids_loaded guia_id=%s rows=%s ids=%s duplicates=%s without_order=%s",
+            guia_id,
+            len(rows),
+            len(ids),
+            duplicates,
+            without_order,
+        )
+        if duplicates:
+            logger.warning(
+                "guias_ai.job.duplicate_item_orders guia_id=%s duplicates=%s",
+                guia_id,
+                duplicates,
+            )
         return ids
 
     async def _patch_item_enriquecido(
@@ -1301,10 +1496,28 @@ class JobRunner:
         item: EnrichedItem,
     ) -> None:
         if not item_id:
+            logger.warning(
+                "guias_ai.job.patch_item_skipped_missing_id ordem=%s nome=%s status=%s has_photo=%s has_maps=%s",
+                item.extracted.ordem,
+                item.extracted.nome_original[:80],
+                item.status_matching.value,
+                bool(item.foto_url),
+                bool(item.google_maps_uri),
+            )
             return
         payload = self._build_item_update_payload(item)
         try:
             await self._supabase.update_guia_item(item_id=item_id, payload=payload)
+            logger.info(
+                "guias_ai.job.patch_item_ok item_id=%s ordem=%s nome=%s status=%s has_photo=%s has_maps=%s lugar_id=%s",
+                item_id,
+                item.extracted.ordem,
+                item.extracted.nome_original[:80],
+                item.status_matching.value,
+                bool(item.foto_url),
+                bool(item.google_maps_uri),
+                bool(item.lugar_id),
+            )
         except ExternalServiceError as exc:
             logger.warning(
                 "guias_ai.job.patch_item_failed item_id=%s reason=%s",
@@ -1317,10 +1530,22 @@ class JobRunner:
         enriched: EnrichedItem,
         match: tuple[dict[str, Any] | None, float, StatusMatching],
     ) -> EnrichedItem:
-        internal_lugar, _internal_score, internal_status = match
+        internal_lugar, internal_score, internal_status = match
+        if internal_status == StatusMatching.ENCONTRADO_INTERNO and internal_lugar:
+            return JobRunner._merge_internal_match(
+                enriched=enriched,
+                internal_lugar=internal_lugar,
+                internal_score=internal_score,
+                status=StatusMatching.ENCONTRADO_INTERNO,
+            )
+
         if internal_status == StatusMatching.POSSIVEL_DUPLICADO and internal_lugar:
-            enriched.lugar_id = internal_lugar.get("id")
-            enriched.lugar_existente = internal_lugar
+            enriched = JobRunner._merge_internal_match(
+                enriched=enriched,
+                internal_lugar=internal_lugar,
+                internal_score=internal_score,
+                status=enriched.status_matching,
+            )
             if enriched.status_matching not in (
                 StatusMatching.NAO_ENCONTRADO,
                 StatusMatching.IGNORADO,
@@ -1329,6 +1554,121 @@ class JobRunner:
                 if "possivel_duplicado_interno" not in enriched.alertas:
                     enriched.alertas.append("possivel_duplicado_interno")
         return enriched
+
+    @staticmethod
+    def _build_internal_enriched_item(
+        *,
+        restaurant: ExtractedRestaurant,
+        internal_lugar: dict[str, Any],
+        internal_score: float,
+    ) -> EnrichedItem:
+        extra = internal_lugar.get("extra") if isinstance(internal_lugar.get("extra"), dict) else {}
+        maps_uri, site = _split_maps_and_site(
+            link=_string_or_none(internal_lugar.get("link")),
+            extra=extra,
+        )
+        categories = _string_list(
+            extra.get("categorias_google")
+            or extra.get("types")
+            or extra.get("categorias")
+        )
+        primary_type = _string_or_none(extra.get("primary_type"))
+        if primary_type and primary_type not in categories:
+            categories.insert(0, primary_type)
+
+        return EnrichedItem(
+            extracted=restaurant,
+            place_id=_string_or_none(internal_lugar.get("place_id")),
+            nome_oficial=_string_or_none(internal_lugar.get("nome")),
+            endereco=_first_string(
+                extra.get("formatted_address"),
+                extra.get("endereco"),
+                extra.get("address"),
+            ),
+            latitude=_float_or_none(extra.get("latitude")),
+            longitude=_float_or_none(extra.get("longitude")),
+            google_maps_uri=maps_uri,
+            telefone=_first_string(extra.get("telefone"), extra.get("phone_number")),
+            site=site,
+            rating=_float_or_none(extra.get("rating")),
+            total_avaliacoes=_int_or_none(
+                extra.get("total_avaliacoes")
+                or extra.get("user_rating_count")
+                or extra.get("userRatingCount")
+            ),
+            preco_nivel=_int_or_none(
+                internal_lugar.get("faixa_preco")
+                or extra.get("preco_nivel")
+                or extra.get("price_range")
+            ),
+            foto_url=_internal_cover_url(internal_lugar),
+            status_negocio=_first_string(extra.get("status_negocio"), extra.get("business_status")),
+            aberto_agora=_bool_or_none(extra.get("aberto_agora"), extra.get("open_now")),
+            bairro_normalizado=_string_or_none(internal_lugar.get("bairro")),
+            cidade_normalizada=_string_or_none(internal_lugar.get("cidade")),
+            categorias_google=categories,
+            confianca_enriquecimento=internal_score,
+            status_matching=StatusMatching.ENCONTRADO_INTERNO,
+            score_matching=internal_score,
+            lugar_id=_string_or_none(internal_lugar.get("id")),
+            lugar_existente=internal_lugar,
+        )
+
+    @staticmethod
+    def _merge_internal_match(
+        *,
+        enriched: EnrichedItem,
+        internal_lugar: dict[str, Any],
+        internal_score: float,
+        status: StatusMatching,
+    ) -> EnrichedItem:
+        internal = JobRunner._build_internal_enriched_item(
+            restaurant=enriched.extracted,
+            internal_lugar=internal_lugar,
+            internal_score=internal_score,
+        )
+
+        merged = enriched.model_copy(deep=True)
+        for field in (
+            "place_id",
+            "nome_oficial",
+            "endereco",
+            "latitude",
+            "longitude",
+            "google_maps_uri",
+            "telefone",
+            "site",
+            "rating",
+            "total_avaliacoes",
+            "preco_nivel",
+            "foto_url",
+            "foto_atribuicao",
+            "status_negocio",
+            "aberto_agora",
+            "bairro_normalizado",
+            "cidade_normalizada",
+        ):
+            if getattr(merged, field) in (None, "", []):
+                setattr(merged, field, getattr(internal, field))
+
+        if not merged.categorias_google:
+            merged.categorias_google = internal.categorias_google
+        merged.lugar_id = internal.lugar_id
+        merged.lugar_existente = internal_lugar
+        merged.status_matching = status
+        merged.score_matching = max(float(merged.score_matching or 0.0), internal_score)
+        merged.confianca_enriquecimento = max(
+            float(merged.confianca_enriquecimento or 0.0),
+            internal_score,
+        )
+        merged.alertas = list(dict.fromkeys([*internal.alertas, *merged.alertas]))
+        return merged
+
+    @staticmethod
+    def _needs_google_hydration(item: EnrichedItem | None) -> bool:
+        if item is None or item.status_matching != StatusMatching.ENCONTRADO_INTERNO:
+            return False
+        return not item.foto_url or not item.google_maps_uri
 
     @staticmethod
     def _build_item_update_payload(item: EnrichedItem) -> dict[str, Any]:
@@ -1640,3 +1980,113 @@ def _safe_iso_datetime(value: str | None) -> str | None:
     if not cleaned:
         return None
     return cleaned[:50]
+
+
+def _split_maps_and_site(
+    *,
+    link: str | None,
+    extra: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    maps_uri = _first_string(
+        extra.get("google_maps_uri"),
+        extra.get("googleMapsUri"),
+        extra.get("maps_uri"),
+    )
+    site = _first_string(extra.get("website_uri"), extra.get("site"), extra.get("website"))
+
+    if link:
+        if _is_google_maps_url(link):
+            maps_uri = maps_uri or link
+        else:
+            site = site or link
+
+    return maps_uri, site
+
+
+def _is_google_maps_url(value: str) -> bool:
+    lower = value.lower()
+    return (
+        "google.com/maps" in lower
+        or "maps.google." in lower
+        or "maps.app.goo.gl" in lower
+        or "goo.gl/maps" in lower
+    )
+
+
+def _internal_cover_url(internal_lugar: dict[str, Any]) -> str | None:
+    cover = _string_or_none(internal_lugar.get("imagem_capa"))
+    if cover:
+        return cover
+
+    fotos = internal_lugar.get("fotos")
+    if not isinstance(fotos, list):
+        return None
+
+    candidates = [item for item in fotos if isinstance(item, dict)]
+    candidates.sort(
+        key=lambda item: (
+            not bool(item.get("capa")),
+            _int_or_none(item.get("ordem")) or 0,
+        )
+    )
+    for item in candidates:
+        url = _first_string(item.get("url"), item.get("public_url"), item.get("photo_uri"))
+        if url:
+            return url
+    return None
+
+
+def _first_string(*values: Any) -> str | None:
+    for value in values:
+        cleaned = _string_or_none(value)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _string_or_none(value: Any) -> str | None:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return None
+    return None
+
+
+def _bool_or_none(*values: Any) -> bool | None:
+    for value in values:
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
