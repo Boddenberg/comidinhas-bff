@@ -144,6 +144,8 @@ pendencias claras de revisao opcional.
    `job_id` (HTTP 202). Quando so a URL e enviada, o backend baixa a
    pagina, extrai o texto e usa o `<title>` como `titulo_sugerido` antes
    de iniciar o pipeline.
+   Use o campo `texto` para rankings e materias longas; o campo `mensagem`
+   pertence ao endpoint curto de recomendacao por conversa.
 2. O backend executa o pipeline em segundo plano (asyncio task), atualizando
    o estado do job a cada etapa: `sanitizing_text`, `classifying_content`,
    `extracting_guide_metadata`, `extracting_restaurants`,
@@ -237,7 +239,7 @@ e agregada ("tempo medio de deslocamento baixo para o grupo"), nunca
 
 - `GUIAS_AI_ENABLED` (default `true`)
 - `GUIAS_AI_CLASSIFIER_MODEL` / `GUIAS_AI_EXTRACTOR_MODEL` (default `gpt-4o-mini`)
-- `GUIAS_AI_TEXT_MIN_CHARS` / `GUIAS_AI_TEXT_MAX_CHARS`
+- `GUIAS_AI_TEXT_MIN_CHARS` / `GUIAS_AI_TEXT_MAX_CHARS` (default `400000`)
 - `GUIAS_AI_MAX_ITEMS_PER_GUIDE` / `GUIAS_AI_MIN_ITEMS_TO_CREATE_GUIDE`
 - `GUIAS_AI_MAX_PLACES_LOOKUPS_PER_JOB` / `GUIAS_AI_PLACES_CONCURRENCY`
 - `GUIAS_AI_MATCH_STRONG_SCORE` / `GUIAS_AI_MATCH_WEAK_SCORE`

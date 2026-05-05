@@ -545,7 +545,71 @@ Campos opcionais importantes:
 
 ---
 
-## 0.11 IA Recomenda Restaurantes por Mensagem (no-auth)
+## 0.11 Criar Guia com IA a partir de texto colado (no-auth)
+
+Use este endpoint quando o usuario colar ranking, materia, lista editorial ou guia gastronomico longo:
+
+> "Ranking Sao Paulo 2025: as melhores hamburguerias..."
+
+O limite do campo `texto` e 400.000 caracteres. Nao envie esse conteudo no campo `mensagem` de `/ia/recomendar-restaurantes`; aquele endpoint e para frases curtas de busca/conversa e retorna recomendacoes, nao cria guia.
+
+```http
+POST /guias/ia/imports
+Content-Type: application/json
+```
+
+### Payload recomendado
+
+```json
+{
+  "grupo_id": "uuid-do-contexto-selecionado",
+  "perfil_id": "uuid-do-perfil-opcional",
+  "texto": "Ranking completo colado pelo usuario...",
+  "titulo_sugerido": "Top hamburguerias SP",
+  "url_origem": "https://exemplo.com/ranking-hamburguerias"
+}
+```
+
+Campos obrigatorios:
+- `grupo_id`
+- `texto`
+
+Campos opcionais importantes:
+- `perfil_id`: quem iniciou a importacao.
+- `titulo_sugerido`: use quando a UI ja tiver um titulo.
+- `url_origem`: mande apenas URLs com `http://` ou `https://`.
+
+### Chamada sugerida
+
+```ts
+type CreateGuideImportRequest = {
+  grupo_id: string
+  texto: string
+  perfil_id?: string
+  titulo_sugerido?: string
+  url_origem?: string
+}
+
+async function createGuideImport(payload: CreateGuideImportRequest) {
+  const response = await fetch(`${API_URL}/guias/ia/imports`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    throw await response.json()
+  }
+
+  return response.json()
+}
+```
+
+Resposta inicial: HTTP `202` com `job_id`. Depois disso, acompanhe o progresso por polling em `GET /guias/ia/imports/{job_id}` ou por SSE em `GET /guias/ia/imports/{job_id}/stream`.
+
+---
+
+## 0.12 IA Recomenda Restaurantes por Mensagem (no-auth)
 
 Use este endpoint para a experiencia de chat/busca natural:
 
