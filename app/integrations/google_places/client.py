@@ -738,13 +738,19 @@ class GooglePlacesClient:
                 timeout=self._settings.google_places_timeout_seconds,
             )
             response.raise_for_status()
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "google_places.photo.fetch_failed photo_name=%s error=%s",
+                photo_name,
+                type(exc).__name__,
+            )
             return None
 
         payload = response.json()
         photo_uri = payload.get("photoUri")
         if isinstance(photo_uri, str) and photo_uri.strip():
             return photo_uri
+        logger.warning("google_places.photo.missing_uri photo_name=%s", photo_name)
         return None
 
     async def _fetch_place_photos(self, raw_photos: Any) -> list[GooglePlacePhoto]:
@@ -761,7 +767,7 @@ class GooglePlacesClient:
             )
         )
 
-        return [
+        result = [
             GooglePlacePhoto(
                 photo_uri=photo_uri,
                 width_px=self._extract_int(photo, "widthPx"),
@@ -771,6 +777,12 @@ class GooglePlacesClient:
             for photo, photo_uri in zip(photos, photo_uris, strict=True)
             if photo_uri is not None
         ]
+        if photos and not result:
+            logger.warning(
+                "google_places.photo.all_fetches_failed requested=%s",
+                len(photos),
+            )
+        return result
 
     @staticmethod
     def _extract_error_message(response: httpx.Response) -> str:

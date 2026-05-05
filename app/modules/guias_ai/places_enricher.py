@@ -181,51 +181,43 @@ class PlacesEnricher:
         best_candidate: NearbyRestaurant | None = None
         best_score = 0.0
 
-        for query in queries:
-            cache_key = normalize_query_key(query)
-            cached = self._cache.get(cache_key)
-            if cached is not None:
-                candidates = cached
-            else:
-                calls += 1
-                try:
-                    candidates = await self._client.search_text_restaurants(
-                        TextSearchRestaurantsRequest(
-                            text_query=query,
-                            page_size=5,
-                            included_type="restaurant",
-                            strict_type_filtering=False,
-                        )
-                    )
-                except ExternalServiceError as exc:
-                    logger.warning(
-                        "guias_ai.places_enricher.search_failed query=%s reason=%s",
-                        query,
-                        exc.message,
-                    )
-                    continue
-                except Exception:  # pragma: no cover - defensivo
-                    logger.exception("guias_ai.places_enricher.search_unexpected query=%s", query)
-                    continue
-                self._cache.set(cache_key, candidates)
+        best_candidate, best_score, used_calls = await self._run_search_attempts(
+            item=item,
+            attempts=self._build_search_attempts(
+                queries=queries,
+                included_type="restaurant",
+            ),
+            best_candidate=best_candidate,
+            best_score=best_score,
+        )
+        calls += used_calls
 
-            candidate, score = self._best_candidate(item, candidates)
-            if candidate and score > best_score:
-                best_candidate, best_score = candidate, score
-
-            if best_candidate and best_score >= self._settings.guias_ai_match_strong_score:
-                break
+        if best_score < self._settings.guias_ai_match_weak_score:
+            best_candidate, best_score, used_calls = await self._run_search_attempts(
+                item=item,
+                attempts=self._build_search_attempts(
+                    queries=self._build_unfiltered_query_variants(
+                        item=item,
+                        guide_cidade=guide_cidade,
+                    ),
+                    included_type=None,
+                ),
+                best_candidate=best_candidate,
+                best_score=best_score,
+            )
+            calls += used_calls
 
         if best_candidate is None:
             logger.info(
                 "guias_ai.places_enricher.nao_encontrado nome=%s cidade=%s bairro=%s "
-                "categoria=%s tentativas=%s chamadas=%s",
+                "categoria=%s tentativas=%s chamadas=%s queries=%s",
                 item.nome_original,
                 item.cidade or guide_cidade or "-",
                 item.bairro or "-",
                 item.categoria or guide_categoria or "-",
                 len(queries),
                 calls,
+                queries[:3],
             )
             return _EnrichOutcome(
                 enriched=EnrichedItem(
@@ -238,6 +230,16 @@ class PlacesEnricher:
 
         status = self._status_from_score(best_score)
         enriched = self._mapear(item, best_candidate, score=best_score, status=status)
+        logger.info(
+            "guias_ai.places_enricher.matched nome=%s candidate=%s score=%.3f status=%s has_photo=%s has_maps=%s calls=%s",
+            item.nome_original,
+            best_candidate.display_name,
+            best_score,
+            status.value,
+            bool(enriched.foto_url),
+            bool(enriched.google_maps_uri),
+            calls,
+        )
         if status == StatusMatching.BAIXA_CONFIANCA:
             logger.info(
                 "guias_ai.places_enricher.baixa_confianca nome=%s candidato=%s score=%.2f",
@@ -245,7 +247,129 @@ class PlacesEnricher:
                 best_candidate.display_name or "-",
                 best_score,
             )
+        if not enriched.foto_url:
+            if "google_place_sem_foto" not in enriched.alertas:
+                enriched.alertas.append("google_place_sem_foto")
+            logger.warning(
+                "guias_ai.places_enricher.matched_without_photo nome=%s candidate=%s place_id=%s score=%.3f photos=%s photo_uri=%s",
+                item.nome_original,
+                best_candidate.display_name,
+                best_candidate.id,
+                best_score,
+                len(best_candidate.photos),
+                bool(getattr(best_candidate, "photo_uri", None)),
+            )
         return _EnrichOutcome(enriched=enriched, calls=calls)
+
+    async def _search_candidates(
+        self,
+        *,
+        query: str,
+        included_type: str | None,
+    ) -> tuple[list[NearbyRestaurant], int]:
+        cache_key = self._cache_key(query=query, included_type=included_type)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached, 0
+
+        try:
+            candidates = await self._client.search_text_restaurants(
+                TextSearchRestaurantsRequest(
+                    text_query=query,
+                    page_size=5,
+                    included_type=included_type,
+                    strict_type_filtering=False,
+                )
+            )
+        except ExternalServiceError as exc:
+            logger.warning(
+                "guias_ai.places_enricher.search_failed query=%s included_type=%s reason=%s",
+                query,
+                included_type,
+                exc.message,
+            )
+            return [], 1
+        except Exception:  # pragma: no cover - defensivo
+            logger.exception(
+                "guias_ai.places_enricher.search_unexpected query=%s included_type=%s",
+                query,
+                included_type,
+            )
+            return [], 1
+
+        self._cache.set(cache_key, candidates)
+        return candidates, 1
+
+    async def _run_search_attempts(
+        self,
+        *,
+        item: ExtractedRestaurant,
+        attempts: list[tuple[str, str | None]],
+        best_candidate: NearbyRestaurant | None,
+        best_score: float,
+    ) -> tuple[NearbyRestaurant | None, float, int]:
+        calls = 0
+        for query, included_type in attempts:
+            candidates, used_call = await self._search_candidates(
+                query=query,
+                included_type=included_type,
+            )
+            calls += used_call
+
+            candidate, score = self._best_candidate(item, candidates)
+            if candidate and score > best_score:
+                best_candidate, best_score = candidate, score
+
+            if best_candidate and best_score >= self._settings.guias_ai_match_strong_score:
+                break
+
+        return best_candidate, best_score, calls
+
+    @staticmethod
+    def _build_search_attempts(
+        *,
+        queries: list[str],
+        included_type: str | None,
+    ) -> list[tuple[str, str | None]]:
+        attempts: list[tuple[str, str | None]] = []
+        for query in queries:
+            query = query.strip()
+            entry = (query, included_type)
+            if query and entry not in attempts:
+                attempts.append(entry)
+        return attempts
+
+    def _build_unfiltered_query_variants(
+        self,
+        *,
+        item: ExtractedRestaurant,
+        guide_cidade: str | None,
+    ) -> list[str]:
+        nome = item.nome_original.strip()
+        bairro = (item.bairro or "").strip()
+        cidade = (item.cidade or guide_cidade or "").strip()
+        nome_simplificado = self._simplify_name(nome)
+
+        variants: list[str] = []
+
+        def add(*parts: str) -> None:
+            cleaned = " ".join(p for p in parts if p)
+            if cleaned and cleaned not in variants:
+                variants.append(cleaned)
+
+        add(nome, cidade)
+        add(nome, bairro)
+        add(nome)
+        if nome_simplificado and nome_simplificado.lower() != nome.lower():
+            add(nome_simplificado, cidade)
+            add(nome_simplificado)
+
+        return variants[:3]
+
+    @staticmethod
+    def _cache_key(*, query: str, included_type: str | None) -> str:
+        type_key = included_type or "any"
+        return normalize_query_key(f"type={type_key} query={query}")
 
     def _build_query_variants(
         self,
@@ -310,17 +434,30 @@ class PlacesEnricher:
         if not candidates:
             return None, 0.0
 
-        scored: list[tuple[float, NearbyRestaurant]] = []
+        scored: list[tuple[float, int, NearbyRestaurant]] = []
         for candidate in candidates:
             score = self._score_candidate(item, candidate)
             if score > 0:
-                scored.append((score, candidate))
+                reviews = int(candidate.user_rating_count or 0)
+                scored.append((score, reviews, candidate))
 
         if not scored:
             return None, 0.0
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        score, candidate = scored[0]
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        top_score = scored[0][0]
+        photo_candidates = [
+            entry
+            for entry in scored
+            if getattr(entry[2], "photo_uri", None)
+            and entry[0] >= top_score - 0.03
+        ]
+        if photo_candidates:
+            photo_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            score, _reviews, candidate = photo_candidates[0]
+            return candidate, score
+
+        score, _reviews, candidate = scored[0]
         return candidate, score
 
     def _score_candidate(
