@@ -1,507 +1,384 @@
-# comidinhas-bff
+<div align="center">
 
-Scaffold inicial de um BFF/BFA em Python usando FastAPI.
+# Comidinhas BFF
 
-## O que ja vem pronto
+Backend for Frontend do Comidinhas: a camada inteligente que conecta produto,
+dados, mapas, WhatsApp e IA para transformar escolhas gastronômicas em uma
+experiência simples para pessoas, casais e grupos.
 
-- estrutura base para evoluir o BFF
-- endpoint `GET /health`
-- endpoint `GET /api/v1/hello-world`
-- endpoint `POST /api/v1/chat` para OpenAI
-- endpoint `POST /api/v1/google-maps/restaurants/nearby` para Google Places
-- endpoint `POST /api/v1/infobip/whatsapp/template` para envio de template WhatsApp via Infobip
-- endpoints no-auth de perfis, contextos, lugares, guias, decisao e recomendacao por IA em `/api/v1/perfis`, `/api/v1/grupos`, `/api/v1/lugares`, `/api/v1/guias`, `/api/v1/ia/decidir-restaurante` e `/api/v1/ia/recomendar-restaurantes`
-- docs automaticas em `http://127.0.0.1:8000/docs`
-- `main.py` na raiz para rodar direto no PyCharm
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![Supabase](https://img.shields.io/badge/Supabase-Data-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-IA-412991?style=for-the-badge&logo=openai&logoColor=white)
+![Google Maps](https://img.shields.io/badge/Google%20Places-Maps-4285F4?style=for-the-badge&logo=googlemaps&logoColor=white)
+![Railway](https://img.shields.io/badge/Railway-Deploy-0B0D0E?style=for-the-badge&logo=railway&logoColor=white)
+![Pytest](https://img.shields.io/badge/Pytest-Tests-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 
-## Arquitetura inicial
+</div>
 
-```text
-app/
-  api/
-    dependencies.py
-    error_handlers.py
-    routes/
-    v1/routes/
-  core/
-    config.py
-    errors.py
-    lifespan.py
-  integrations/
-    openai/client.py
-    google_places/client.py
-    infobip/client.py
-    supabase/client.py
-  modules/
-    chat/
-    google_places/
-    infobip/
-    profiles/
-    groups/
-    places/
-    home/
+## Sumário
+
+- [Visão do produto](#visão-do-produto)
+- [Arquitetura](#arquitetura)
+- [Stack atual](#stack-atual)
+- [Pipeline de IA](#pipeline-de-ia)
+- [Tecnologias futuras de IA](#tecnologias-futuras-de-ia)
+- [Estrutura do projeto](#estrutura-do-projeto)
+- [Configuração local](#configuração-local)
+- [Supabase](#supabase)
+- [Deploy](#deploy)
+- [Qualidade](#qualidade)
+
+## Visão do produto
+
+O Comidinhas BFF é o cérebro de integração do app Comidinhas. Ele centraliza a
+regra de negócio que o frontend não deve carregar, conversa com serviços
+externos, normaliza dados de restaurantes e prepara respostas pensadas para uma
+interface rápida, afetiva e orientada a decisão.
+
+O projeto hoje cobre:
+
+- perfis e contextos de uso para pessoa, casal e grupo;
+- restaurantes salvos, favoritos, listas de "quero ir" e histórico do grupo;
+- guias gastronômicos manuais e guias criados por IA;
+- recomendações e decisões assistidas por IA;
+- enriquecimento de lugares com dados do Google Places;
+- comunicação via WhatsApp usando Infobip;
+- persistência e arquivos no Supabase;
+- observabilidade básica com logs estruturados, middleware HTTP e rastreio de jobs.
+
+Este README descreve a arquitetura e as tecnologias do projeto. Ele evita expor
+contratos detalhados de métodos ou rotas; para isso, use a documentação
+interativa gerada pela aplicação durante o desenvolvimento.
+
+## Arquitetura
+
+O projeto segue uma arquitetura modular de BFF: a API fica fina, os casos de uso
+concentram o comportamento de produto, e integrações externas ficam isoladas em
+clientes próprios. Isso facilita trocar provedores, testar fluxos e evoluir a IA
+sem espalhar dependências pelo código.
+
+```mermaid
+flowchart LR
+    classDef client fill:#FFF3B0,stroke:#F4B400,color:#211A00
+    classDef api fill:#E3F2FD,stroke:#1E88E5,color:#0D2B45
+    classDef domain fill:#E8F5E9,stroke:#43A047,color:#12351B
+    classDef ai fill:#F3E5F5,stroke:#8E24AA,color:#2B1231
+    classDef data fill:#E0F7FA,stroke:#00ACC1,color:#08353B
+    classDef ext fill:#FFF0E6,stroke:#FB8C00,color:#3B2100
+
+    Web["Frontend Comidinhas"]:::client
+    API["FastAPI BFF"]:::api
+    HTTP["Routers versionados"]:::api
+    Core["Core: config, CORS, logs, erros"]:::api
+    Modules["Módulos de produto"]:::domain
+    AI["Pipeline de IA"]:::ai
+    Integrations["Clientes de integração"]:::ext
+    DB["Supabase Postgres + Storage"]:::data
+    OpenAI["OpenAI"]:::ai
+    Google["Google Places"]:::ext
+    Infobip["Infobip WhatsApp"]:::ext
+
+    Web --> API
+    API --> HTTP
+    API --> Core
+    HTTP --> Modules
+    Modules --> AI
+    Modules --> Integrations
+    AI --> OpenAI
+    AI --> Google
+    Integrations --> DB
+    Integrations --> Google
+    Integrations --> Infobip
 ```
 
-### Como esta dividido
+### Camadas
 
-- `api/`: camada HTTP e injecao de dependencias
-- `core/`: configuracao, ciclo de vida da app e erros comuns
-- `integrations/`: clientes para servicos externos
-- `modules/`: contratos e casos de uso por funcionalidade
+| Camada | Responsabilidade | Como aparece no projeto |
+| --- | --- | --- |
+| Entrada HTTP | Recebe chamadas do frontend, aplica versionamento e delega trabalho | `app/api` |
+| Core | Configuração, ciclo de vida da app, CORS, erros e logging | `app/core` |
+| Módulos | Casos de uso, schemas e regras de produto por domínio | `app/modules` |
+| Integrações | Clientes para provedores externos e persistência | `app/integrations` |
+| Dados | SQL, migrações, storage e evolução do schema | `supabase` |
+| Testes | Cobertura de API, integrações, IA e regras principais | `tests` |
 
-## Variaveis de ambiente
+### Princípios de design
 
-Copie `.env.example` para `.env` e preencha:
+- **BFF primeiro:** o frontend recebe respostas já modeladas para a experiência
+  do app, não payloads crus de provedores externos.
+- **Domínio modular:** perfis, grupos, lugares, guias, decisões e IA evoluem em
+  módulos separados.
+- **Integrações isoladas:** OpenAI, Google Places, Supabase e Infobip ficam atrás
+  de clientes internos.
+- **IA resiliente:** jobs longos rodam fora do ciclo imediato da requisição, com
+  progresso, reprocessamento, cancelamento e falhas parciais.
+- **Privacidade por desenho:** recomendações usam contexto agregado sempre que
+  possível, evitando expor dados individuais sensíveis.
+- **Operação simples:** FastAPI, Uvicorn e Railway mantêm o deploy direto, com
+  configuração por variáveis de ambiente.
+
+## Stack atual
+
+| Tecnologia | Papel no Comidinhas | Onde entra |
+| --- | --- | --- |
+| Python 3.11 | Linguagem principal do backend | aplicação, módulos e testes |
+| FastAPI | Framework HTTP assíncrono | API BFF e documentação interativa |
+| Uvicorn | Servidor ASGI | execução local e produção |
+| Pydantic Settings | Configuração tipada por ambiente | `.env`, defaults e validação |
+| HTTPX | Cliente HTTP assíncrono | chamadas para OpenAI, Google, Supabase e Infobip |
+| Supabase Postgres | Banco operacional | perfis, grupos, lugares, guias e jobs de IA |
+| Supabase Storage | Armazenamento de imagens | fotos de perfil, grupos e lugares |
+| OpenAI API | IA generativa e extração estruturada | chat, recomendações e criação de guias |
+| Google Places API | Dados ricos de restaurantes | busca, detalhes, fotos e geolocalização |
+| Infobip WhatsApp | Mensageria transacional | convites, templates e comunicações externas |
+| Pytest | Testes automatizados | API, integrações, regras e pipeline de IA |
+| Railway | Hospedagem e runtime | deploy com health check |
+
+## Pipeline de IA
+
+A feature de guias com IA transforma textos ou links gastronômicos em guias
+estruturados dentro do Comidinhas. A arquitetura foi pensada para aguentar textos
+longos, provedores instáveis e respostas parciais sem perder o trabalho do
+usuário.
+
+```mermaid
+flowchart TD
+    classDef input fill:#FFF8E1,stroke:#F9A825,color:#332600
+    classDef ai fill:#F3E5F5,stroke:#8E24AA,color:#2B1231
+    classDef maps fill:#E3F2FD,stroke:#1976D2,color:#082C4A
+    classDef data fill:#E8F5E9,stroke:#43A047,color:#12351B
+    classDef ui fill:#FCE4EC,stroke:#D81B60,color:#3B0B1F
+
+    A["Texto ou URL"]:::input
+    B["Sanitização e proteção contra prompt injection"]:::ai
+    C["Classificação gastronômica"]:::ai
+    D["Extração de guia e restaurantes"]:::ai
+    E["Match com lugares internos"]:::data
+    F["Enriquecimento Google Places"]:::maps
+    G["Seleção de capa e sugestões"]:::ai
+    H["Persistência incremental"]:::data
+    I["Progresso para o frontend"]:::ui
+
+    A --> B --> C --> D --> E --> F --> G --> H --> I
+```
+
+### O que a IA já faz
+
+- classifica se o conteúdo serve para virar guia gastronômico;
+- extrai restaurantes de rankings, matérias, listas e textos grandes;
+- divide textos longos em chunks com overlap para reduzir perda de contexto;
+- preserva ordem de ranking quando ela existe no material original;
+- cruza itens importados com restaurantes já salvos pelo grupo;
+- usa Google Places para enriquecer endereço, fotos, rating e metadados;
+- cria guias de forma incremental, permitindo que a experiência apareça antes
+  do fim de todo o enriquecimento;
+- calcula sugestões de uso do guia para o contexto do grupo;
+- registra custo aproximado, chamadas externas, alertas e qualidade geral;
+- suporta cancelamento, reexecução, watchdog e cache em processo.
+
+### Fluxos de produto suportados pela IA
+
+| Fluxo | Objetivo |
+| --- | --- |
+| Criar guia com IA | Converter texto ou link em guia gastronômico estruturado |
+| Recomendar restaurantes | Interpretar desejo livre do usuário e retornar opções relevantes |
+| Decidir restaurante | Escolher uma opção a partir de favoritos, listas ou guias |
+| Reparar buscas | Melhorar consultas ao Maps quando o nome importado é ambíguo |
+| Sugerir para o grupo | Priorizar opções com base no contexto coletivo disponível |
+
+## Tecnologias futuras de IA
+
+<details open>
+<summary><strong>Aba de evolução IA-first</strong></summary>
+
+| Tecnologia | Para que vamos usar | Ganho esperado |
+| --- | --- | --- |
+| OpenAI Embeddings | Busca semântica de restaurantes, guias e preferências | Encontrar lugares por intenção, não só por palavra exata |
+| pgvector no Supabase | Armazenar vetores junto dos dados do produto | RAG e ranking sem sair da stack atual |
+| RAG contextual | Responder usando histórico, guias, favoritos e preferências do grupo | Recomendações mais precisas e explicáveis |
+| Tool calling com agentes | Orquestrar Supabase, Maps e lógica de decisão em fluxos multi-etapa | Assistente mais autônomo para planejar saídas |
+| Vision/OCR multimodal | Ler cardápios, prints, posts e fotos de listas gastronômicas | Importar conteúdo visual sem digitação |
+| Re-ranking semântico | Reordenar candidatos por gosto do grupo, momento e intenção | Decisões menos genéricas e mais pessoais |
+| LLM evals | Testar prompts, extrações e recomendações como regressão de produto | Menos surpresa ao trocar prompts ou modelos |
+| Observabilidade de LLM | Medir latência, custo, qualidade, tokens e falhas por etapa | Controle de operação e custo de IA |
+| Prompt registry | Versionar prompts, modelos e parâmetros por feature | Rollback rápido e experimentos seguros |
+| Redis + workers | Tirar jobs pesados do processo web | IA mais escalável, durável e previsível |
+| Guardrails de IA | Filtrar prompt injection, PII e respostas fora de escopo | Mais segurança para dados e experiência |
+| Personalização aprendida | Inferir preferências com base em interações do usuário | Recomendações que melhoram com o uso |
+
+</details>
+
+## Estrutura do projeto
+
+```text
+comidinhas-bff/
+  app/
+    api/
+      routes/
+      v1/
+    core/
+    integrations/
+      google_places/
+      infobip/
+      openai/
+      supabase/
+    modules/
+      chat/
+      decisoes/
+      google_places/
+      groups/
+      grupos/
+      guias/
+      guias_ai/
+      home/
+      infobip/
+      lugares/
+      perfis/
+      places/
+      profiles/
+  supabase/
+    migrations/
+  tests/
+  main.py
+  pyproject.toml
+  requirements.txt
+  railway.toml
+```
+
+### Domínios principais
+
+| Domínio | Responsabilidade |
+| --- | --- |
+| Perfis | Identidade de uso, preferências e contexto individual |
+| Grupos | Espaços compartilhados, membros, convites e permissões |
+| Lugares | Restaurantes salvos, status, fotos, favoritos e metadados |
+| Guias | Coleções manuais ou geradas por IA |
+| Guias IA | Pipeline de importação, extração, enriquecimento e sugestões |
+| Decisões | Recomendações e escolha assistida de restaurantes |
+| Home | Agregados para a tela inicial do contexto ativo |
+| Integrações | Provedores externos e persistência |
+
+## Configuração local
+
+### Pré-requisitos
+
+- Python 3.11+
+- Conta e projeto Supabase
+- Chave OpenAI para recursos de IA
+- Chave Google Maps/Places para enriquecimento de restaurantes
+- Credenciais Infobip se o WhatsApp estiver habilitado
+
+### Instalação
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .[dev]
+```
+
+### Ambiente
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Campos esperados:
+Depois, preencha o `.env` conforme os provedores que deseja habilitar.
 
-- `WEB_APP_BASE_URL`
-- `WEB_GROUP_INVITE_PATH`
-- `OPENAI_API_KEY`
-- `OPENAI_CHAT_MODEL`
-- `GOOGLE_MAPS_API_KEY`
-- `GOOGLE_PLACES_DEFAULT_LANGUAGE_CODE`
-- `GOOGLE_PLACES_DEFAULT_REGION_CODE`
-- `GOOGLE_PLACES_MAX_PHOTOS_PER_PLACE`
-- `SUPABASE_URL`
-- `SUPABASE_KEY`
-- `SUPABASE_PROFILE_BUCKET`
-- `SUPABASE_PROFILE_PHOTO_MAX_BYTES`
-- `SUPABASE_GROUP_BUCKET`
-- `SUPABASE_GROUP_PHOTO_MAX_BYTES`
-- `INFOBIP_BASE_URL`
-- `INFOBIP_API_KEY`
-- `INFOBIP_WHATSAPP_FROM`
-- `INFOBIP_DEFAULT_TEMPLATE_NAME`
-- `INFOBIP_DEFAULT_LANGUAGE`
+| Grupo | Variáveis principais |
+| --- | --- |
+| App | `APP_NAME`, `APP_ENV`, `APP_VERSION`, `WEB_APP_BASE_URL`, `WEB_GROUP_INVITE_PATH` |
+| Logs | `LOG_LEVEL`, `LOG_HTTPX_LEVEL`, `LOG_UVICORN_ACCESS_LEVEL`, `LOG_REQUEST_BODY`, `LOG_INTEGRATION_PAYLOADS` |
+| OpenAI | `OPENAI_API_KEY`, `OPENAI_CHAT_MODEL` |
+| Google Places | `GOOGLE_MAPS_API_KEY`, `GOOGLE_PLACES_DEFAULT_LANGUAGE_CODE`, `GOOGLE_PLACES_DEFAULT_REGION_CODE`, `GOOGLE_PLACES_MAX_PHOTOS_PER_PLACE` |
+| Guias IA | `GUIAS_AI_ENABLED`, `GUIAS_AI_CHAT_MODEL`, `GUIAS_AI_CLASSIFIER_MODEL`, `GUIAS_AI_EXTRACTOR_MODEL`, `GUIAS_AI_TEXT_MAX_CHARS`, `GUIAS_AI_MAX_ITEMS_PER_GUIDE`, `GUIAS_AI_JOB_MAX_SECONDS` |
+| Supabase | `SUPABASE_URL`, `SUPABASE_KEY`, buckets de perfil, grupo e lugares |
+| Infobip | `INFOBIP_BASE_URL`, `INFOBIP_API_KEY`, `INFOBIP_WHATSAPP_FROM`, template e idioma padrão |
 
-### Exemplo Infobip WhatsApp
-
-Com `INFOBIP_API_KEY` e `INFOBIP_WHATSAPP_FROM` configurados:
-
-```powershell
-curl -X POST http://127.0.0.1:8000/api/v1/infobip/whatsapp/template `
-  -H "Content-Type: application/json" `
-  -d '{"to":"5511999999999","placeholders":["Boddenberg"]}'
-```
-
-## Como rodar
-
-1. Crie e ative um ambiente virtual:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-2. Instale as dependencias:
-
-```powershell
-pip install -e .[dev]
-```
-
-3. Rode a aplicacao:
+### Execução
 
 ```powershell
 python main.py
 ```
 
-4. Teste os endpoints:
+Aplicação local:
 
-- `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/health`
-- `http://127.0.0.1:8000/api/v1/hello-world`
-- `http://127.0.0.1:8000/docs`
+- app: `http://127.0.0.1:8000`
+- documentação interativa: `http://127.0.0.1:8000/docs`
+- health check: `http://127.0.0.1:8000/health`
 
-## Rodando no PyCharm
+## Supabase
 
-- abra o projeto
-- configure o interpretador para `.\.venv\Scripts\python.exe`
-- execute o arquivo `main.py`
+O banco fica em `supabase/` e combina schema base com migrações incrementais.
+O fluxo atual do app usa tabelas no-auth para simplificar a experiência de
+produto enquanto a autenticação completa pode evoluir em paralelo.
 
-## Testes
+Ordem sugerida para um ambiente novo:
+
+1. Execute `supabase/schema.sql`.
+2. Execute `supabase/group_join_requests_setup.sql` se precisar de convites e
+   solicitações de entrada.
+3. Execute `supabase/place_photos_setup.sql` se for usar fotos de lugares.
+4. Execute as migrações em `supabase/migrations/`, mantendo a ordem do nome dos
+   arquivos.
+
+Migrações importantes de IA:
+
+| Arquivo | Objetivo |
+| --- | --- |
+| `20260502120000_ai_guides.sql` | Estrutura de guias por IA, itens e jobs |
+| `20260502130000_ai_guides_v2.sql` | Cancelamento, retry e suporte ao watchdog |
+
+Arquivos legados de autenticação ainda existem para referência e evolução, mas
+o fluxo principal do produto hoje está no modelo no-auth.
+
+## Deploy
+
+O projeto já vem pronto para Railway:
+
+- `railway.toml` define builder, comando de start, health check e política de
+  restart;
+- `Procfile` mantém compatibilidade com runtimes que leem processo `web`;
+- o servidor sobe com Uvicorn escutando a porta entregue pelo ambiente.
+
+Comando de produção:
+
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+## Qualidade
+
+### Testes
 
 ```powershell
 pytest
 ```
 
-## Criar guia com IA
-
-A feature "Criar guia com IA" permite que o usuario cole um texto desestruturado
-copiado da internet (ranking, materia, lista, guia gastronomico) **ou apenas
-um link** e o backend monte um guia completo dentro do Comidinhas, com
-restaurantes, fotos, dados do Google Maps, sugestoes para o grupo e
-pendencias claras de revisao opcional.
-
-### Como funciona
-
-1. O frontend chama `POST /api/v1/guias/ia/imports` com `texto` OU
-   `url_origem` (pelo menos um e obrigatorio) e recebe imediatamente um
-   `job_id` (HTTP 202). Quando so a URL e enviada, o backend baixa a
-   pagina, extrai o texto e usa o `<title>` como `titulo_sugerido` antes
-   de iniciar o pipeline.
-   Use o campo `texto` para rankings e materias longas; o campo `mensagem`
-   pertence ao endpoint curto de recomendacao por conversa.
-2. O backend executa o pipeline em segundo plano (asyncio task), atualizando
-   o estado do job a cada etapa: `sanitizing_text`, `classifying_content`,
-   `extracting_guide_metadata`, `extracting_restaurants`,
-   `matching_internal_restaurants`, `searching_google_places`,
-   `enriching_places`, `selecting_photos`, `calculating_group_suggestions`,
-   `creating_guide`, `completed` ou `completed_with_warnings`.
-3. O frontend faz polling em `GET /api/v1/guias/ia/imports/{job_id}` para
-   exibir progresso ("Lendo o texto", "Identificando restaurantes", etc.).
-4. Quando o job termina, `guia_id` aparece no payload do job e o app abre
-   o guia via `GET /api/v1/guias/ia/{guia_id}`.
-
-### Resiliencia
-
-- Cada etapa tem retry com backoff e nao morre por timeout de request.
-- Falhas parciais (ex: 3 itens nao acharam Place ID) NAO abortam a importacao.
-  O guia e criado com pendencias e o usuario pode resolver depois.
-- Se o LLM falhar, o extractor cai em um parser deterministico.
-- Se o Google Maps falhar/atingir limite, os itens ficam com status
-  `nao_encontrado`/`pendente` mas continuam no guia com pelo menos
-  o nome importado para o usuario revisar/editar depois.
-- Itens marcados com baixa confianca pelo extrator (`parece_ruido`,
-  `parece_real=false`) NAO sao mais descartados: entram no guia com alertas
-  (`extrator_marcou_como_ruido`, `extrator_baixa_confianca`) para o usuario
-  decidir. So `parece_separador` (titulos de secao tipo "Top 20") sao
-  filtrados, porque nao sao restaurantes.
-- Textos nao gastronomicos (receita, review individual, conteudo nao
-  relacionado a comida) terminam com status `invalid_content` e mensagem
-  amigavel ao usuario.
-
-### Importar a partir de uma URL
-
-O frontend pode mandar **so o link** da materia / ranking / blog post no
-campo `url_origem` (omitindo `texto`). O backend baixa a pagina via
-HTTPS, extrai o conteudo textual (descartando script/style/nav/footer),
-infere o `<title>` como `titulo_sugerido` e segue o pipeline normal.
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/guias/ia/imports \
-  -H "Content-Type: application/json" \
-  -d '{"grupo_id":"abc12345","url_origem":"https://blog.exemplo.com/melhores-pizzarias-sp"}'
-```
-
-Limites e protecoes:
-
-- Apenas URLs `http://` / `https://` (FTP, file, data, etc. sao recusados).
-- IPs privados, loopback, link-local e `localhost` sao bloqueados (anti-SSRF).
-- Timeout configuravel (`GUIAS_AI_URL_FETCH_TIMEOUT_SECONDS`, default 20s).
-- Tamanho maximo configuravel (`GUIAS_AI_URL_FETCH_MAX_BYTES`, default 5MB —
-  truncado se a pagina exceder).
-- Erros de rede / status >= 400 viram HTTP 502 com mensagem clara.
-
-### Ordem dos itens (ranking vs ordem do texto)
-
-A pipeline detecta automaticamente se o texto colado e um ranking
-explicito ou nao, e respeita a intencao do usuario:
-
-- **Ranking explicito** (texto tem "TOP 20", numeracao, ou metade dos
-  itens com posicao_ranking detectada): ordena os itens por
-  `posicao_ranking` no guia final.
-- **Lista sem ordem explicita**: preserva a ordem em que os
-  restaurantes aparecem no texto colado (ordem original).
-
-A flag `is_ranking` e gravada em `metadados.is_ranking` no guia e em
-`estatisticas.is_ranking` no job, para o frontend exibir adequadamente.
-
-### Funil observavel (logs)
-
-Para diagnosticar discrepancias entre o texto colado e o guia gerado,
-os logs por job mostram o funil completo:
-
-- `guias_ai.extractor.chunk_summary`: extraidos por chunk + tipo
-- `guias_ai.extractor.merge`: brutos / deduplicados / mantidos / ranking
-- `guias_ai.job.candidatos_filtro`: extraidos / mantidos / separadores /
-  ruido sinalizado / baixa confianca sinalizada
-- `guias_ai.job.itens_descartados`: lista os primeiros 50 nomes descartados
-  e o motivo
-- `guias_ai.job.ordem_detectada`: is_ranking + itens com posicao
-- `guias_ai.places_enricher.nao_encontrado`: nome do item que nao foi
-  encontrado no Google + tentativas de busca
-- `guias_ai.job.funil_final`: numeros agregados de fim de pipeline
-
-### Privacidade nas sugestoes
-
-As sugestoes do guia ("Melhor para hoje", "Mais facil para todos", etc.)
-usam apenas a `cidade` salva no perfil dos membros do grupo. Nenhum endereco
-individual e exposto a outros membros nem enviado para o LLM. Toda explicacao
-e agregada ("tempo medio de deslocamento baixo para o grupo"), nunca
-"fica perto da casa do Fulano".
-
-### Variaveis de ambiente da feature
-
-- `GUIAS_AI_ENABLED` (default `true`)
-- `GUIAS_AI_CLASSIFIER_MODEL` / `GUIAS_AI_EXTRACTOR_MODEL` (default `gpt-4o-mini`)
-- `GUIAS_AI_TEXT_MIN_CHARS` / `GUIAS_AI_TEXT_MAX_CHARS` (default `400000`)
-- `GUIAS_AI_MAX_ITEMS_PER_GUIDE` / `GUIAS_AI_MIN_ITEMS_TO_CREATE_GUIDE`
-- `GUIAS_AI_MAX_PLACES_LOOKUPS_PER_JOB` / `GUIAS_AI_PLACES_CONCURRENCY`
-- `GUIAS_AI_MATCH_STRONG_SCORE` / `GUIAS_AI_MATCH_WEAK_SCORE`
-- `GUIAS_AI_STEP_MAX_ATTEMPTS` / `GUIAS_AI_JOB_MAX_SECONDS`
-- `GUIAS_AI_URL_FETCH_TIMEOUT_SECONDS` / `GUIAS_AI_URL_FETCH_MAX_BYTES` /
-  `GUIAS_AI_URL_FETCH_MAX_REDIRECTS` (modo URL-only)
-- `OPENAI_API_KEY` (obrigatorio) e `GOOGLE_MAPS_API_KEY` (recomendado).
-
-### APIs do Google usadas
-
-A feature reutiliza o cliente existente em `app/integrations/google_places`
-e usa `places:searchText` com `FieldMask` enxuto para localizar candidatos e
-`places:photos` para a capa do guia. Nenhum dado sensivel do grupo e enviado
-ao Google.
-
-### Detalhes da arquitetura
-
-**Extracao por chunks com overlap.** Textos longos (rankings TOP 50/100) sao
-divididos em pedacos de ~12k chars com 1.5k de overlap e processados em
-paralelo. Itens duplicados na fronteira sao deduplicados por nome
-normalizado e place_id no merge.
-
-**Guia incremental.** O guia esqueleto e criado logo apos a extracao
-(antes do enriquecimento Google), entao o frontend pode navegar para a URL
-do guia enquanto os cards ainda estao chegando.
-
-**Auto-criacao de lugares.** Itens com match Google de alta confianca e
-`place_id` que ainda nao existem no banco do grupo viram `lugares`
-automaticamente, ja com status `quero_ir`. O usuario pode marcar
-favorito/quero_voltar/etc. imediatamente.
-
-**Cache em processo.** Buscas no Google Places sao cacheadas em memoria
-(TTL+LRU) para reduzir custo quando varios grupos importam textos
-similares. Configuravel por `GUIAS_AI_PLACES_CACHE_*`.
-
-**Maquina de estados resiliente.** Jobs tem `cancelled` como estado
-adicional, suporte a retry (`/reexecutar`) e watchdog para marcar como
-falhos os que ficaram parados (deploy no meio do processamento).
-Idempotencia por hash do texto: se o mesmo texto for enviado nas ultimas
-24h e ja virou guia, devolvemos o job antigo sem refazer.
-
-**Sugestoes mais inteligentes.** "Mais facil para todos" agora usa
-Haversine entre cada candidato e o centroide dos lugares ja salvos pelo
-grupo (dado proprio do grupo, sem expor membros). Se o grupo nao tiver
-lugares com lat/long, cai para o fallback por cidade.
-
-**Streaming com items.** A rota `/imports/{job_id}/stream` emite dois tipos
-de eventos: `progresso` (a cada mudanca de etapa do job) e `item` (cada vez
-que um restaurante e enriquecido). O frontend pode ir colorindo os cards
-do guia conforme o Google responde, sem polling.
-
-**Itens incrementais.** Os `guia_itens` sao inseridos no banco logo apos a
-extracao com dados basicos e status `pendente`. Conforme o pipeline avanca,
-cada linha e PATCHada com fotos, telefone, rating, etc. O usuario pode
-abrir o guia logo de cara e ver todos os 50 cards ja com nome e posicao.
-
-**Cancelamento cooperativo.** `POST /imports/{id}/cancelar` aborta a task
-em curso via `task.cancel()`, propagando `CancelledError` no proximo
-`await`. Isso evita gastar tokens LLM e quotas Google depois do cancel.
-
-**Retry resumivel.** Quando um job retorna `failed`/`cancelled` mas ja
-tinha criado o guia esqueleto com itens, o `reexecutar` nao refaz a
-extracao do LLM — apenas re-enriquece os itens em status `pendente`,
-`nao_encontrado` ou `baixa_confianca`. Reusa todo o trabalho anterior.
-
-**Limpeza opcional ao deletar.** `DELETE /api/v1/guias/ia/{id}?remover_lugares_auto=true`
-apaga o guia e tambem os lugares que o pipeline auto-criou (marcados com
-`extra.fonte = "guias_ai_auto"`) **se** o usuario nao tiver interagido
-com eles (status default, sem favorito/notas/fotos). Lugares com mexida do
-usuario ficam preservados.
-
-**Cost accounting.** O job rastreia tokens de entrada/saida da OpenAI,
-chamadas Google Places e custo estimado em USD/BRL nas estatisticas. Usado
-pra monitorar gasto sem precisar de painel separado.
-
-**Watchdog oportunista.** Cada nova criacao de job dispara o watchdog em
-fire-and-forget, marcando como `failed` jobs travados sem update por mais
-de 3 minutos. Sem necessidade de cron externo.
-
-**Rate limit por grupo e por perfil.** Maximo 3 jobs ativos por grupo e 5
-por perfil simultaneamente. Configuravel.
-
-### Limitacoes da primeira versao
-
-- O calculo de proximidade usa o centroide dos lugares ja salvos pelo
-  grupo. Quando enderecos por membro forem suportados, basta evoluir
-  `SuggestionEngine` sem mexer em nada da pipeline.
-- O guia gerado por IA convive com guias manuais na mesma tabela `guias`
-  (`tipo_guia = 'ia'`). Os itens ricos ficam em `guia_itens`.
-- Cache de Places, registry de tasks de cancelamento e watchdog
-  oportunista sao in-process. Sobrevivem ao tempo de vida do worker, mas
-  nao a um deploy. Para volume alto, promover Cache pra Redis e usar
-  watchdog externo via cron.
-- Cost accounting usa um snapshot fixo de precos (USD/1M tokens) embutido
-  no codigo. Atualize em `cost_tracker.py` quando os precos mudarem.
-- Sem testes automatizados nesta etapa (por escolha de escopo).
-
-## Setup no Supabase
-
-### Fluxo no-auth atual
-
-Rode o SQL de [supabase/schema.sql](supabase/schema.sql) no SQL Editor do Supabase. Ele cria `public.perfis`, `public.grupos`, `public.lugares` e `public.guias` sem depender de Supabase Auth.
-
-Se o banco no-auth ja existe, rode tambem [supabase/group_join_requests_setup.sql](supabase/group_join_requests_setup.sql) para adicionar codigo curto de grupo, foto do grupo e solicitacoes de entrada sem dropar dados.
-
-Para habilitar a feature "Criar guia com IA", aplique nesta ordem:
-
-1. [supabase/migrations/20260502120000_ai_guides.sql](supabase/migrations/20260502120000_ai_guides.sql)
-   — colunas aditivas em `guias`, novas tabelas `guia_itens` e `guia_ai_jobs`.
-2. [supabase/migrations/20260502130000_ai_guides_v2.sql](supabase/migrations/20260502130000_ai_guides_v2.sql)
-   — estado `cancelled`, coluna `parent_job_id` (retry) e indice util pro
-   watchdog detectar jobs travados.
-
-Ambas sao 100% aditivas: nada e removido e os guias manuais existentes
-continuam funcionando sem alteracao.
-
-O fluxo principal fica:
-
-- `POST /api/v1/perfis/` cadastra uma pessoa e cria automaticamente o espaco individual dela.
-- `GET /api/v1/perfis/{perfil_id}/contextos` lista os espacos selecionaveis do perfil.
-- `POST /api/v1/grupos/` cria um contexto `individual`, `casal` ou `grupo` com membros ligados por `perfil_id`; para `grupo`, informe `dono_perfil_id`.
-- `GET /api/v1/grupos/{grupo_id}/convite?responsavel_perfil_id=...` gera link, mensagem copiavel e payload para QR code.
-- `GET /api/v1/grupos/codigo/{codigo}` busca um grupo pelo codigo numerico de 6 digitos.
-- `POST /api/v1/grupos/codigo/{codigo}/solicitacoes` cria uma solicitacao de entrada para o dono aprovar.
-- `GET /api/v1/grupos/{grupo_id}/solicitacoes?responsavel_perfil_id=...` lista solicitacoes (somente dono).
-- `POST /api/v1/grupos/{grupo_id}/solicitacoes/{solicitacao_id}/aceitar` aceita uma solicitacao e adiciona o perfil como membro.
-- `POST /api/v1/grupos/{grupo_id}/solicitacoes/{solicitacao_id}/recusar` recusa uma solicitacao.
-- `PATCH /api/v1/grupos/{grupo_id}/membros/{perfil_id}/papel` permite ao dono tornar um membro `administrador` ou voltar para `membro`.
-- `PATCH /api/v1/grupos/{grupo_id}` atualiza nome, descricao ou foto via URL quando `responsavel_perfil_id` for dono ou administrador; mudancas de dono/membros continuam restritas ao dono.
-- `POST /api/v1/grupos/{grupo_id}/foto?responsavel_perfil_id=...` envia ou substitui a foto do grupo (dono ou administrador).
-- `GET /api/v1/grupos/?perfil_id=...` lista os contextos de um perfil.
-- `GET /api/v1/lugares/?grupo_id=...` lista restaurantes do contexto selecionado.
-- `POST /api/v1/lugares/` adiciona restaurante ao contexto; use `adicionado_por_perfil_id` para registrar quem adicionou.
-- `GET /api/v1/guias/?grupo_id=...` lista guias customizados do contexto.
-- `POST /api/v1/guias/` cria um guia com nome, descricao e `lugar_ids`.
-- `POST /api/v1/guias/{guia_id}/lugares` adiciona restaurante ao guia.
-- `PATCH /api/v1/guias/{guia_id}/lugares/reordenar` reordena restaurantes do guia.
-- `POST /api/v1/guias/ia/imports` cria um job de importacao "Criar guia com IA" a partir de um texto colado e retorna `job_id` (HTTP 202).
-- `GET /api/v1/guias/ia/imports/{job_id}` consulta o progresso e estado final do job.
-- `GET /api/v1/guias/ia/{guia_id}` retorna o guia gerado por IA com itens enriquecidos, sugestoes e metadados.
-- `PATCH /api/v1/guias/ia/{guia_id}` edita nome, descricao, categoria, regiao e cidade principal.
-- `PATCH /api/v1/guias/ia/{guia_id}/capa` troca a imagem de capa (URL livre ou foto de um item).
-- `PATCH /api/v1/guias/ia/{guia_id}/itens/reordenar` reordena os itens do guia.
-- `PATCH /api/v1/guias/ia/{guia_id}/itens/{item_id}` edita um item (associar lugar, status, foto).
-- `DELETE /api/v1/guias/ia/{guia_id}/itens/{item_id}` remove um item do guia.
-- `PATCH /api/v1/guias/ia/{guia_id}/itens/bulk` confirma, descarta ou associa varios itens em uma so chamada.
-- `POST /api/v1/guias/ia/imports/{job_id}/cancelar` cancela um job em andamento.
-- `POST /api/v1/guias/ia/imports/{job_id}/reexecutar` reprocessa um job cancelado/falho.
-- `POST /api/v1/guias/ia/imports/watchdog` marca como `failed` jobs travados sem atualizacao.
-- `GET /api/v1/guias/ia/imports/{job_id}/stream` recebe progresso e itens enriquecidos por Server-Sent Events.
-- `DELETE /api/v1/guias/ia/{guia_id}?remover_lugares_auto=true` remove o guia (e opcionalmente os lugares auto-criados que o usuario nao tocou).
-- `POST /api/v1/ia/decidir-restaurante` escolhe restaurante com IA por escopo: `todos`, `favoritos`, `quero_ir` ou `guia`.
-- `POST /api/v1/ia/recomendar-restaurantes` interpreta uma mensagem livre, busca no Supabase e no Google Places, e retorna opcoes estruturadas para o front.
-- `GET /api/v1/home/?grupo_id=...` retorna o agregado do contexto selecionado.
-
-### Legado com auth
-
-Os scripts abaixo pertencem ao fluxo antigo com `profiles`, `groups`, `places` e bearer token. Para o app no-auth, prefira o `schema.sql` acima.
-
-### 1. Perfil base
-
-Rode o SQL de [supabase/profile_setup.sql](supabase/profile_setup.sql) no SQL Editor do Supabase para criar `public.profiles`, trigger e policies.
-
-No Dashboard do Supabase, crie um bucket publico chamado `profile-photos`.
-
-### 2. Grupos e Lugares
-
-Rode o SQL de [supabase/groups_places_setup.sql](supabase/groups_places_setup.sql) para criar:
-
-- `public.groups` — casais ou grupos
-- `public.group_members` — membros de cada grupo
-- `public.places` — lugares/restaurantes vinculados ao grupo
-- triggers de auditoria (`created_by`, `updated_by`, `updated_at`)
-- RLS (Row Level Security) para todas as tabelas
-- funcoes RPC: `home_summary`, `set_active_group`, `seed_couple_group`, `seed_filipe_victor`
-
-### 3. Dados iniciais (Filipe e Victor)
-
-Apos criar as contas de Filipe e Victor via `POST /api/v1/profiles/signup`, use um dos dois caminhos:
-
-**Via API** (autenticado como qualquer um dos dois):
-```bash
-curl -X POST "http://127.0.0.1:8000/api/v1/groups/seed/filipe-victor" \
-  -H "Authorization: Bearer SEU_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"filipe_email":"filipe@comidinhas.app","victor_email":"victor@comidinhas.app"}'
-```
-
-**Via SQL Editor do Supabase**:
-```sql
-select public.seed_filipe_victor('filipe@comidinhas.app', 'victor@comidinhas.app');
-```
-
-Depois disso, voce ja pode usar:
-
-**Perfil / Autenticacao**
-- `POST /api/v1/profiles/signup` — cadastra usuario + perfil inicial
-- `POST /api/v1/profiles/signin` — autentica por email e senha
-- `POST /api/v1/profiles/refresh` — renova a sessao
-- `GET /api/v1/profiles/me` — perfil autenticado
-- `PATCH /api/v1/profiles/me` — edita dados do perfil
-- `PATCH /api/v1/profiles/me/credentials` — troca username, email e senha
-- `POST /api/v1/profiles/me/photo` — envia foto de perfil
-- `DELETE /api/v1/profiles/me/photo` — remove foto
-- `DELETE /api/v1/profiles/me` — apaga dados do perfil
-- `DELETE /api/v1/profiles/me/account` — apaga a conta inteira
-
-**Grupos / Casais**
-- `GET /api/v1/groups/me/context` — contexto atual: perfil, grupo ativo e papel
-- `GET /api/v1/groups/` — lista grupos do usuario
-- `POST /api/v1/groups/` — cria grupo ou casal (partner_email ou partner_profile_id)
-- `GET /api/v1/groups/{group_id}` — detalhe do grupo com membros
-- `PATCH /api/v1/groups/{group_id}` — atualiza nome/tipo/descricao
-- `DELETE /api/v1/groups/{group_id}` — remove o grupo
-- `POST /api/v1/groups/{group_id}/members` — adiciona membro
-- `DELETE /api/v1/groups/{group_id}/members/{profile_id}` — remove membro
-- `POST /api/v1/groups/active` — define o grupo ativo
-- `POST /api/v1/groups/seed/filipe-victor` — cria o casal Filipe e Victor
-
-**Lugares / Restaurantes**
-- `GET /api/v1/places/` — listagem paginada com busca e filtros
-  - Query params: `group_id`, `page`, `page_size`, `search`, `category`, `neighborhood`, `status`, `is_favorite`, `price_range`, `price_range_min`, `price_range_max`, `sort_by`, `sort_order`
-- `POST /api/v1/places/` — adiciona um lugar
-- `GET /api/v1/places/{place_id}` — detalhe do lugar
-- `PATCH /api/v1/places/{place_id}` — atualiza campos
-- `DELETE /api/v1/places/{place_id}` — remove o lugar
-
-**Home (agregador)**
-- `GET /api/v1/home/` — retorna grupo, contadores, favoritos, ultimos adicionados, fila "quero ir" e "quero voltar"
-  - Query params: `group_id`, `top_limit`
-
-**Google Places — Autocomplete e Save**
-- `POST /api/v1/google-maps/places/autocomplete` — sugestoes em tempo real enquanto o usuario digita
-  - Body: `input`, `location_bias`, `included_primary_types`, `session_token`, `max_results`, ...
-  - Retorna lista de `PlacePrediction` e/ou `QueryPrediction`
-- `GET /api/v1/google-maps/places/{place_id}` — detalhes completos de um lugar (nome, categoria, bairro, cidade, preco, fotos, coordenadas)
-- `POST /api/v1/google-maps/places/save` — busca detalhes no Google e salva direto no banco do grupo
-  - Body: `place_id`, `group_id` (opcional, usa grupo ativo), `status`, `is_favorite`, `notes`
-  - Retorna o `PlaceResponse` criado no banco
-
-## Exemplos de chamadas
-
-### Chat OpenAI
-
-```bash
-curl --request POST "http://127.0.0.1:8000/api/v1/chat" \
-  --header "Content-Type: application/json" \
-  --data "{\"message\":\"Quero uma sugestao de jantar leve para hoje\"}"
-```
-
-### Chat OpenAI com historico
-
-```bash
-curl --request POST "http://127.0.0.1:8000/api/v1/chat" \
-  --header "Content-Type: application/json" \
-  --data "{\"message\":\"Agora me passe uma versao vegetariana\",\"history\":[{\"role\":\"user\",\"content\":\"Quero uma sugestao de jantar leve para hoje\"},{\"role\":\"assistant\",\"content\":\"Uma boa opcao e salmao com legumes assados.\"}]}"
-```
-
-### Restaurantes proximos via Google Places
-
-```bash
-curl --request POST "http://127.0.0.1:8000/api/v1/google-maps/restaurants/nearby" \
-  --header "Content-Type: application/json" \
-  --data "{\"latitude\":-23.55052,\"longitude\":-46.633308,\"radius_meters\":1500,\"max_results\":5,\"included_types\":[\"restaurant\"],\"rank_preference\":\"POPULARITY\"}"
-```
+A suíte cobre:
+
+- criação da aplicação e rotas principais;
+- fluxos no-auth de perfis, grupos, lugares e guias;
+- integrações com clientes externos usando mocks;
+- recomendações e decisões por IA;
+- pipeline de guias com IA, incluindo job runner, URL fetcher e enriquecimento.
+
+### Convenções importantes
+
+- Configuração sempre via `Settings` e variáveis de ambiente.
+- Integrações externas devem ficar em `app/integrations`.
+- Regras de produto devem ficar nos módulos correspondentes em `app/modules`.
+- Novas features de IA devem registrar progresso, custo, alertas e caminho de
+  fallback quando possível.
+- Documentação pública deve explicar arquitetura e intenção, não contratos
+  internos sensíveis.
+
+## Identidade técnica
+
+O Comidinhas BFF não é só uma API de cadastro de restaurantes. Ele é uma camada
+de inteligência de produto: entende contexto, transforma conteúdo solto em dados
+úteis, conversa com mapas e IA, preserva a experiência do grupo e entrega ao
+frontend uma base pronta para decisões melhores.
+
+Em resumo: FastAPI dá velocidade, Supabase dá estrutura, Google Places dá mundo
+real, OpenAI dá interpretação, e o BFF costura tudo em uma experiência simples.
