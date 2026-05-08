@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from difflib import SequenceMatcher
 from typing import Any, AsyncIterator
 
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
 from app.integrations.google_places.client import GooglePlacesClient
+from app.modules.guias_ai.cost_tracker import CostTracker
 from app.modules.google_places.schemas import (
     NearbyRestaurant,
     TextSearchRestaurantsRequest,
 )
 from app.modules.guias_ai.places_cache import TTLCache, normalize_query_key
+from app.modules.guias_ai.query_repairer import PlacesQueryRepairer
 from app.modules.guias_ai.sanitizer import normalizar_nome
 from app.modules.guias_ai.schemas import (
     EnrichedItem,
@@ -51,9 +54,11 @@ class PlacesEnricher:
         client: GooglePlacesClient,
         settings: Settings,
         cache: TTLCache[list[NearbyRestaurant]] | None = None,
+        query_repairer: PlacesQueryRepairer | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
+        self._query_repairer = query_repairer
         self._cache = cache or TTLCache(
             max_entries=settings.guias_ai_places_cache_max_entries,
             ttl_seconds=settings.guias_ai_places_cache_ttl_seconds,
@@ -66,6 +71,7 @@ class PlacesEnricher:
         guide_cidade: str | None,
         guide_categoria: str | None,
         budget: int,
+        tracker: CostTracker | None = None,
     ) -> tuple[list[EnrichedItem], int, int]:
         """Run enrichment for many items respecting concurrency and total budget.
 
@@ -91,6 +97,7 @@ class PlacesEnricher:
                     item=item,
                     guide_cidade=guide_cidade,
                     guide_categoria=guide_categoria,
+                    tracker=tracker,
                 )
                 counters["calls"] += used.calls
                 counters["remaining"] -= used.calls
@@ -111,6 +118,7 @@ class PlacesEnricher:
         guide_cidade: str | None,
         guide_categoria: str | None,
         budget: int,
+        tracker: CostTracker | None = None,
     ) -> AsyncIterator[tuple[int, EnrichedItem, int, bool]]:
         """Yield (index, enriched_item, calls_used, has_photo) as each task completes.
 
@@ -137,6 +145,7 @@ class PlacesEnricher:
                     item=item,
                     guide_cidade=guide_cidade,
                     guide_categoria=guide_categoria,
+                    tracker=tracker,
                 )
                 counters["remaining"] -= outcome.calls
                 has_photo = bool(outcome.enriched.foto_url)
@@ -161,6 +170,7 @@ class PlacesEnricher:
         item: ExtractedRestaurant,
         guide_cidade: str | None,
         guide_categoria: str | None,
+        tracker: CostTracker | None = None,
     ) -> "_EnrichOutcome":
         if item.parece_separador or not item.parece_real or item.parece_ruido:
             return _EnrichOutcome(
@@ -192,14 +202,16 @@ class PlacesEnricher:
         )
         calls += used_calls
 
+        unfiltered_queries: list[str] = []
         if best_score < self._settings.guias_ai_match_weak_score:
+            unfiltered_queries = self._build_unfiltered_query_variants(
+                item=item,
+                guide_cidade=guide_cidade,
+            )
             best_candidate, best_score, used_calls = await self._run_search_attempts(
                 item=item,
                 attempts=self._build_search_attempts(
-                    queries=self._build_unfiltered_query_variants(
-                        item=item,
-                        guide_cidade=guide_cidade,
-                    ),
+                    queries=unfiltered_queries,
                     included_type=None,
                 ),
                 best_candidate=best_candidate,
@@ -207,10 +219,43 @@ class PlacesEnricher:
             )
             calls += used_calls
 
+        repair_queries: list[str] = []
+        repair_used = False
+        if (
+            self._query_repairer is not None
+            and best_score < self._settings.guias_ai_match_strong_score
+        ):
+            repair_result = await self._query_repairer.sugerir_queries(
+                item=item,
+                guide_cidade=guide_cidade,
+                guide_categoria=guide_categoria,
+                failed_queries=[*queries, *unfiltered_queries],
+            )
+            if tracker is not None and (
+                repair_result.input_tokens or repair_result.output_tokens
+            ):
+                tracker.record_llm(
+                    input_tokens=repair_result.input_tokens,
+                    output_tokens=repair_result.output_tokens,
+                )
+            repair_queries = repair_result.queries
+            if repair_queries:
+                repair_used = True
+                best_candidate, best_score, used_calls = await self._run_search_attempts(
+                    item=item,
+                    attempts=self._build_search_attempts(
+                        queries=repair_queries,
+                        included_type=None,
+                    ),
+                    best_candidate=best_candidate,
+                    best_score=best_score,
+                )
+                calls += used_calls
+
         if best_candidate is None:
             logger.info(
                 "guias_ai.places_enricher.nao_encontrado nome=%s cidade=%s bairro=%s "
-                "categoria=%s tentativas=%s chamadas=%s queries=%s",
+                "categoria=%s tentativas=%s chamadas=%s queries=%s repair_queries=%s",
                 item.nome_original,
                 item.cidade or guide_cidade or "-",
                 item.bairro or "-",
@@ -218,6 +263,7 @@ class PlacesEnricher:
                 len(queries),
                 calls,
                 queries[:3],
+                repair_queries[:3],
             )
             return _EnrichOutcome(
                 enriched=EnrichedItem(
@@ -240,6 +286,14 @@ class PlacesEnricher:
             bool(enriched.google_maps_uri),
             calls,
         )
+        if repair_used:
+            logger.info(
+                "guias_ai.places_enricher.query_repair_matched nome=%s candidate=%s score=%.3f queries=%s",
+                item.nome_original,
+                best_candidate.display_name,
+                best_score,
+                repair_queries[:3],
+            )
         if status == StatusMatching.BAIXA_CONFIANCA:
             logger.info(
                 "guias_ai.places_enricher.baixa_confianca nome=%s candidato=%s score=%.2f",
@@ -465,12 +519,32 @@ class PlacesEnricher:
         item: ExtractedRestaurant,
         candidate: NearbyRestaurant,
     ) -> float:
-        norm_extracted = item.nome_normalizado or normalizar_nome(item.nome_original)
         norm_candidate = normalizar_nome(candidate.display_name or "")
-        if not norm_extracted or not norm_candidate:
+        if not norm_candidate:
             return 0.0
 
-        nome_score = SequenceMatcher(None, norm_extracted, norm_candidate).ratio()
+        nome_score = 0.0
+        for alias in self._scoring_name_aliases(item):
+            norm_extracted = normalizar_nome(alias)
+            if not norm_extracted:
+                continue
+
+            alias_score = SequenceMatcher(None, norm_extracted, norm_candidate).ratio()
+
+            if (
+                len(norm_extracted) >= 4
+                and len(norm_candidate) >= 4
+                and (
+                    norm_extracted in norm_candidate
+                    or norm_candidate in norm_extracted
+                )
+            ):
+                alias_score = max(alias_score, 0.7)
+
+            nome_score = max(nome_score, alias_score)
+
+        if nome_score <= 0:
+            return 0.0
 
         cidade_bonus = 0.0
         if item.cidade and candidate.formatted_address:
@@ -483,14 +557,41 @@ class PlacesEnricher:
             if item.bairro.lower() in candidate.formatted_address.lower():
                 bairro_bonus += 0.05
 
-        if (
-            len(norm_extracted) >= 4
-            and len(norm_candidate) >= 4
-            and (norm_extracted in norm_candidate or norm_candidate in norm_extracted)
-        ):
-            nome_score = max(nome_score, 0.7)
-
         return min(1.0, nome_score + cidade_bonus + bairro_bonus)
+
+    def _scoring_name_aliases(self, item: ExtractedRestaurant) -> list[str]:
+        aliases: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: str | None) -> None:
+            if not value:
+                return
+            cleaned = re.sub(r"\s+", " ", value).strip()
+            key = normalizar_nome(cleaned)
+            if not key or key in seen:
+                return
+            seen.add(key)
+            aliases.append(cleaned)
+
+        nome = item.nome_original.strip()
+        unidade = (item.unidade or "").strip()
+        add(nome)
+        if unidade:
+            add(f"{nome} {unidade}")
+            add(unidade)
+
+        parts = [
+            part.strip()
+            for part in re.split(r"\s(?:-|\u2013|\u2014|\|)\s", nome)
+            if part.strip()
+        ]
+        if len(parts) > 1:
+            add(" ".join(parts))
+            first_key = normalizar_nome(parts[0])
+            if len(first_key) <= 3:
+                add(" ".join(parts[1:]))
+
+        return aliases
 
     def _status_from_score(self, score: float) -> StatusMatching:
         if score >= self._settings.guias_ai_match_strong_score:

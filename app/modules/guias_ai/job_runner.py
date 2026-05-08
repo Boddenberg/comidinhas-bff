@@ -17,6 +17,7 @@ from app.modules.guias_ai.extractor import GuideExtractor
 from app.modules.guias_ai.internal_matcher import InternalMatcher
 from app.modules.guias_ai.photo_selector import escolher_capa
 from app.modules.guias_ai.places_enricher import PlacesEnricher
+from app.modules.guias_ai.query_repairer import PlacesQueryRepairer
 from app.modules.guias_ai.sanitizer import (
     detectar_prompt_injection,
     hash_texto,
@@ -73,7 +74,14 @@ class JobRunner:
         self._classifier = ContentClassifier(openai_client=openai_client, settings=settings)
         self._extractor = GuideExtractor(openai_client=openai_client, settings=settings)
         self._internal_matcher = InternalMatcher(client=supabase_client, settings=settings)
-        self._places_enricher = PlacesEnricher(client=google_places_client, settings=settings)
+        self._places_enricher = PlacesEnricher(
+            client=google_places_client,
+            settings=settings,
+            query_repairer=PlacesQueryRepairer(
+                openai_client=openai_client,
+                settings=settings,
+            ),
+        )
         self._suggestion_engine = SuggestionEngine()
 
     async def executar(self, *, job_id: str) -> None:
@@ -464,6 +472,7 @@ class JobRunner:
                 guide_cidade=extracted.cidade_principal,
                 guide_categoria=extracted.categoria,
                 budget=self._settings.guias_ai_max_places_lookups_per_job,
+                tracker=tracker,
             )
             async for index, enriched, calls, has_photo in stream:
                 calls_done += calls
@@ -898,6 +907,7 @@ class JobRunner:
                 guide_cidade=guia.get("cidade_principal"),
                 guide_categoria=guia.get("categoria"),
                 budget=self._settings.guias_ai_max_places_lookups_per_job,
+                tracker=tracker,
             )
             async for index, enriched, calls, has_photo in stream:
                 calls_done += calls

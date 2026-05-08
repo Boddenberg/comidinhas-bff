@@ -2,7 +2,9 @@ import pytest
 
 from app.core.config import Settings
 from app.modules.google_places.schemas import NearbyRestaurant
+from app.modules.guias_ai.cost_tracker import CostTracker
 from app.modules.guias_ai.places_enricher import PlacesEnricher
+from app.modules.guias_ai.query_repairer import QueryRepairResult
 from app.modules.guias_ai.schemas import ExtractedRestaurant, StatusMatching
 
 
@@ -52,6 +54,40 @@ class FakeGooglePlacesClientWithPhotoTie:
                 photo_uri="https://lh3.googleusercontent.com/grindhouse.jpg",
             ),
         ]
+
+
+class FakeGooglePlacesClientWithQueryRepair:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def search_text_restaurants(self, request):  # type: ignore[no-untyped-def]
+        self.requests.append(request)
+        if request.text_query == "HB Hamburgueria e Cia Mooca Sao Paulo":
+            return [
+                NearbyRestaurant(
+                    id="google-hb-mocca",
+                    display_name="HB - Hamburgueria e Cia - Mooca",
+                    formatted_address="Rua da Mooca, 123 - Mooca, Sao Paulo",
+                    primary_type="hamburger_restaurant",
+                    google_maps_uri="https://maps.google.com/?cid=hb",
+                    rating=4.5,
+                    user_rating_count=250,
+                )
+            ]
+        return []
+
+
+class FakeQueryRepairer:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def sugerir_queries(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(kwargs)
+        return QueryRepairResult(
+            queries=["HB Hamburgueria e Cia Mooca Sao Paulo"],
+            input_tokens=30,
+            output_tokens=12,
+        )
 
 
 @pytest.mark.anyio
@@ -109,3 +145,46 @@ async def test_places_enricher_prefers_photo_candidate_when_match_score_ties() -
     assert photos == 1
     assert items[0].place_id == "google-com-foto"
     assert items[0].foto_url == "https://lh3.googleusercontent.com/grindhouse.jpg"
+
+
+@pytest.mark.anyio
+async def test_places_enricher_uses_ai_query_repair_for_short_alias_with_unit() -> None:
+    fake_google = FakeGooglePlacesClientWithQueryRepair()
+    fake_repairer = FakeQueryRepairer()
+    tracker = CostTracker()
+    enricher = PlacesEnricher(
+        client=fake_google,  # type: ignore[arg-type]
+        settings=Settings(google_maps_api_key="maps-key"),
+        query_repairer=fake_repairer,  # type: ignore[arg-type]
+    )
+
+    items, calls, photos = await enricher.enriquecer_lote(
+        extracted_items=[
+            ExtractedRestaurant(
+                ordem=0,
+                nome_original="HB",
+                nome_normalizado="hb",
+                bairro="Mooca",
+                cidade="Sao Paulo",
+                categoria="hamburgueria",
+                unidade="Hamburgueria e Cia - Mooca",
+            )
+        ],
+        guide_cidade="Sao Paulo",
+        guide_categoria="hamburguerias",
+        budget=10,
+        tracker=tracker,
+    )
+
+    assert calls > 0
+    assert photos == 0
+    assert len(fake_repairer.calls) == 1
+    assert any(
+        request.text_query == "HB Hamburgueria e Cia Mooca Sao Paulo"
+        and request.included_type is None
+        for request in fake_google.requests
+    )
+    assert items[0].status_matching == StatusMatching.ENCONTRADO_GOOGLE
+    assert items[0].place_id == "google-hb-mocca"
+    assert items[0].google_maps_uri == "https://maps.google.com/?cid=hb"
+    assert tracker.snapshot()["chamadas_llm"] == 1
