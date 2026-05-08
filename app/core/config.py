@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     log_uvicorn_access_level: str = "INFO"
     log_request_body: bool = False
     log_body_max_chars: int = Field(default=2000, ge=100, le=20000)
+    log_integration_payloads: bool = True
+    log_integration_max_chars: int = Field(default=4000, ge=100, le=50000)
 
     google_maps_api_key: str | None = None
     google_places_base_url: str = "https://places.googleapis.com/v1"
@@ -58,6 +60,9 @@ class Settings(BaseSettings):
     guias_ai_chat_model: str = "gpt-4o-mini"
     guias_ai_classifier_model: str = "gpt-4o-mini"
     guias_ai_extractor_model: str = "gpt-4o-mini"
+    guias_ai_query_repair_enabled: bool = True
+    guias_ai_query_repair_model: str = "gpt-4o-mini"
+    guias_ai_query_repair_max_queries: int = Field(default=5, ge=1, le=5)
     guias_ai_text_min_chars: int = Field(default=80, ge=10, le=10_000)
     guias_ai_text_max_chars: int = Field(default=400_000, ge=1_000, le=400_000)
     guias_ai_max_items_per_guide: int = Field(default=80, ge=1, le=200)

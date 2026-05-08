@@ -6,6 +6,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.errors import ConfigurationError, ExternalServiceError
+from app.core.logging import payload_preview, response_preview
 from app.modules.infobip.schemas import (
     SendWhatsAppTemplateRequest,
     SendWhatsAppTemplateResponse,
@@ -79,7 +80,19 @@ class InfobipClient:
 
     async def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         start = time.perf_counter()
-        logger.debug("infobip.request.start path=%s", self.WHATSAPP_TEMPLATE_PATH)
+        request_body = (
+            payload_preview(
+                payload,
+                max_chars=self._settings.log_integration_max_chars,
+            )
+            if self._settings.log_integration_payloads
+            else None
+        )
+        logger.info(
+            "infobip.request.start path=%s body=%s",
+            self.WHATSAPP_TEMPLATE_PATH,
+            request_body,
+        )
         try:
             response = await self._http_client.post(
                 f"{self._settings.infobip_base_url.rstrip('/')}{self.WHATSAPP_TEMPLATE_PATH}",
@@ -93,11 +106,20 @@ class InfobipClient:
             )
             response.raise_for_status()
             duration_ms = (time.perf_counter() - start) * 1000
+            response_body = (
+                response_preview(
+                    response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.info(
-                "infobip.request.end path=%s status=%s duration_ms=%.2f",
+                "infobip.request.end path=%s status=%s duration_ms=%.2f response=%s",
                 self.WHATSAPP_TEMPLATE_PATH,
                 response.status_code,
                 duration_ms,
+                response_body,
             )
         except httpx.TimeoutException as exc:
             logger.warning("infobip.request.timeout path=%s", self.WHATSAPP_TEMPLATE_PATH)
@@ -107,11 +129,20 @@ class InfobipClient:
             ) from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            error_body = (
+                response_preview(
+                    exc.response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.warning(
-                "infobip.request.http_error path=%s status=%s message=%s",
+                "infobip.request.http_error path=%s status=%s message=%s response=%s",
                 self.WHATSAPP_TEMPLATE_PATH,
                 exc.response.status_code,
                 message,
+                error_body,
             )
             raise ExternalServiceError(
                 "infobip",

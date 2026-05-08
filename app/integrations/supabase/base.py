@@ -16,7 +16,12 @@ from app.core.errors import (
     ExternalServiceError,
     NotFoundError,
 )
-from app.core.logging import sanitize_params
+from app.core.logging import (
+    files_preview,
+    payload_preview,
+    response_preview,
+    sanitize_params,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,13 +187,24 @@ class BaseSupabaseClient:
     ) -> httpx.Response:
         start = time.perf_counter()
         parsed_url = urlparse(url)
-        logger.debug(
-            "supabase.request.start context=%s method=%s path=%s params=%s has_files=%s",
+        body_preview = None
+        if self._settings.log_integration_payloads:
+            body_preview = payload_preview(
+                {
+                    "json": json,
+                    "data": data,
+                    "files": files_preview(files),
+                },
+                max_chars=self._settings.log_integration_max_chars,
+            )
+        logger.info(
+            "supabase.request.start context=%s method=%s path=%s params=%s has_files=%s body=%s",
             context,
             method,
             parsed_url.path,
             sanitize_params(params),
             bool(files),
+            body_preview,
         )
         try:
             response = await self._http_client.request(
@@ -203,13 +219,22 @@ class BaseSupabaseClient:
             )
             response.raise_for_status()
             duration_ms = (time.perf_counter() - start) * 1000
+            response_body = (
+                response_preview(
+                    response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.info(
-                "supabase.request.end context=%s method=%s path=%s status=%s duration_ms=%.2f",
+                "supabase.request.end context=%s method=%s path=%s status=%s duration_ms=%.2f response=%s",
                 context,
                 method,
                 parsed_url.path,
                 response.status_code,
                 duration_ms,
+                response_body,
             )
             return response
         except httpx.TimeoutException as exc:
@@ -227,13 +252,22 @@ class BaseSupabaseClient:
             ) from exc
         except httpx.HTTPStatusError as exc:
             duration_ms = (time.perf_counter() - start) * 1000
+            error_body = (
+                response_preview(
+                    exc.response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.warning(
-                "supabase.request.http_error context=%s method=%s path=%s status=%s duration_ms=%.2f",
+                "supabase.request.http_error context=%s method=%s path=%s status=%s duration_ms=%.2f response=%s",
                 context,
                 method,
                 parsed_url.path,
                 exc.response.status_code,
                 duration_ms,
+                error_body,
             )
             self._raise_for_supabase_error(exc.response, context=context)
             raise

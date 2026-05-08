@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.core.errors import BadRequestError, ExternalServiceError
+from app.core.logging import payload_preview, response_preview
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,11 @@ async def fetch_url_as_text(
         follow_redirects=True,
         max_redirects=max_redirects,
     )
+    logger.info(
+        "guias_ai.url_fetcher.request.start url=%s headers=%s",
+        url,
+        payload_preview(headers, max_chars=1000),
+    )
     try:
         try:
             response = await client.get(url, headers=headers)
@@ -210,6 +216,13 @@ async def fetch_url_as_text(
         if owns_client:
             await client.aclose()
 
+    logger.info(
+        "guias_ai.url_fetcher.request.end url=%s final_url=%s status=%s response=%s",
+        url,
+        str(response.url),
+        response.status_code,
+        response_preview(response, max_chars=4000),
+    )
     if response.status_code >= 400:
         raise ExternalServiceError(
             "url_fetcher",

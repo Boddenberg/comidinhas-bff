@@ -7,6 +7,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.errors import ConfigurationError, ExternalServiceError
+from app.core.logging import payload_preview, response_preview
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +139,19 @@ class OpenAIClient:
 
     async def _post_responses(self, payload: dict[str, Any]) -> dict[str, Any]:
         start = time.perf_counter()
+        request_body = (
+            payload_preview(
+                payload,
+                max_chars=self._settings.log_integration_max_chars,
+            )
+            if self._settings.log_integration_payloads
+            else None
+        )
         logger.info(
-            "openai.responses.start model=%s input_type=%s",
+            "openai.responses.start model=%s input_type=%s body=%s",
             payload.get("model"),
             type(payload.get("input")).__name__,
+            request_body,
         )
         try:
             response = await self._http_client.post(
@@ -155,11 +165,20 @@ class OpenAIClient:
             )
             response.raise_for_status()
             duration_ms = (time.perf_counter() - start) * 1000
+            response_body = (
+                response_preview(
+                    response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.info(
-                "openai.responses.end model=%s status=%s duration_ms=%.2f",
+                "openai.responses.end model=%s status=%s duration_ms=%.2f response=%s",
                 payload.get("model"),
                 response.status_code,
                 duration_ms,
+                response_body,
             )
             return response.json()
         except httpx.TimeoutException as exc:
@@ -176,12 +195,21 @@ class OpenAIClient:
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
             duration_ms = (time.perf_counter() - start) * 1000
+            error_body = (
+                response_preview(
+                    exc.response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.warning(
-                "openai.responses.http_error model=%s status=%s duration_ms=%.2f message=%s",
+                "openai.responses.http_error model=%s status=%s duration_ms=%.2f message=%s response=%s",
                 payload.get("model"),
                 exc.response.status_code,
                 duration_ms,
                 message,
+                error_body,
             )
             raise ExternalServiceError(
                 "openai",

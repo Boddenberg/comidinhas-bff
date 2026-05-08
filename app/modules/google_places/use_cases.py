@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.supabase.client import SupabaseClient
 from app.modules.google_places.schemas import (
@@ -13,6 +15,8 @@ from app.modules.google_places.schemas import (
 from app.modules.lugares.schemas import LugarResponse
 from app.modules.lugares.use_cases import ManageLugaresUseCase
 
+logger = logging.getLogger(__name__)
+
 
 class SearchNearbyRestaurantsUseCase:
     def __init__(self, client: GooglePlacesClient) -> None:
@@ -22,7 +26,18 @@ class SearchNearbyRestaurantsUseCase:
         self,
         request: NearbyRestaurantsRequest,
     ) -> NearbyRestaurantsResponse:
+        logger.info(
+            "google_places.use_case.search_nearby.start lat=%s lng=%s radius=%s max_results=%s",
+            request.latitude,
+            request.longitude,
+            request.radius_meters,
+            request.max_results,
+        )
         places = await self._client.search_nearby_restaurants(request)
+        logger.info(
+            "google_places.use_case.search_nearby.end total=%s",
+            len(places),
+        )
         return NearbyRestaurantsResponse(places=places)
 
 
@@ -34,7 +49,17 @@ class AutocompletePlacesUseCase:
         self,
         request: PlaceAutocompleteRequest,
     ) -> PlaceAutocompleteResponse:
-        return await self._client.autocomplete(request)
+        logger.info(
+            "google_places.use_case.autocomplete.start input_len=%s max_results=%s",
+            len(request.input),
+            request.max_results,
+        )
+        response = await self._client.autocomplete(request)
+        logger.info(
+            "google_places.use_case.autocomplete.end suggestions=%s",
+            len(response.suggestions),
+        )
+        return response
 
 
 class GetPlaceDetailsUseCase:
@@ -42,7 +67,15 @@ class GetPlaceDetailsUseCase:
         self._client = client
 
     async def execute(self, place_id: str) -> PlaceDetailsResponse:
-        return await self._client.get_place_details(place_id)
+        logger.info("google_places.use_case.details.start place_id=%s", place_id)
+        response = await self._client.get_place_details(place_id)
+        logger.info(
+            "google_places.use_case.details.end place_id=%s has_maps=%s has_photo=%s",
+            place_id,
+            bool(response.google_maps_uri),
+            bool(response.photo_uri),
+        )
+        return response
 
 
 class SavePlaceFromGoogleUseCase:
@@ -55,6 +88,13 @@ class SavePlaceFromGoogleUseCase:
         self._supabase = supabase_client
 
     async def execute(self, *, request: SaveFromGoogleRequest) -> LugarResponse:
+        logger.info(
+            "google_places.use_case.save.start place_id=%s grupo_id=%s status=%s favorito=%s",
+            request.place_id,
+            request.grupo_id,
+            request.status,
+            request.favorito,
+        )
         raw = await self._google.get_place_details_raw(request.place_id)
         details = self._google._map_place_details(raw, place_id=request.place_id)
 
@@ -94,4 +134,12 @@ class SavePlaceFromGoogleUseCase:
         await lugares_use_case._preparar_autor(payload=payload, grupo_id=request.grupo_id)
 
         created = await self._supabase.insert_lugar(payload=payload)
-        return ManageLugaresUseCase._mapear(created)
+        response = ManageLugaresUseCase._mapear(created)
+        logger.info(
+            "google_places.use_case.save.end place_id=%s lugar_id=%s grupo_id=%s has_photo=%s",
+            request.place_id,
+            response.id,
+            response.grupo_id,
+            bool(response.imagem_capa),
+        )
+        return response

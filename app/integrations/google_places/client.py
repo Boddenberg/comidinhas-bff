@@ -7,6 +7,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.errors import ConfigurationError, ExternalServiceError
+from app.core.logging import payload_preview, response_preview
 from app.modules.google_places.schemas import (
     GooglePlacePhoto,
     LocationBias,
@@ -382,7 +383,19 @@ class GooglePlacesClient:
         field_mask: str | None,
     ) -> dict[str, Any]:
         start = time.perf_counter()
-        logger.debug("google_places.request.start method=POST path=%s", path)
+        request_body = (
+            payload_preview(
+                body,
+                max_chars=self._settings.log_integration_max_chars,
+            )
+            if self._settings.log_integration_payloads
+            else None
+        )
+        logger.info(
+            "google_places.request.start method=POST path=%s body=%s",
+            path,
+            request_body,
+        )
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self._settings.google_maps_api_key or "",
@@ -399,22 +412,40 @@ class GooglePlacesClient:
             )
             response.raise_for_status()
             duration_ms = (time.perf_counter() - start) * 1000
+            response_body = (
+                response_preview(
+                    response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.info(
-                "google_places.request.end method=POST path=%s status=%s duration_ms=%.2f",
+                "google_places.request.end method=POST path=%s status=%s duration_ms=%.2f response=%s",
                 path,
                 response.status_code,
                 duration_ms,
+                response_body,
             )
         except httpx.TimeoutException as exc:
             logger.warning("google_places.request.timeout method=POST path=%s", path)
             raise ExternalServiceError("google_places", "Timeout ao chamar o Google Places.") from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            error_body = (
+                response_preview(
+                    exc.response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.warning(
-                "google_places.request.http_error method=POST path=%s status=%s message=%s",
+                "google_places.request.http_error method=POST path=%s status=%s message=%s response=%s",
                 path,
                 exc.response.status_code,
                 message,
+                error_body,
             )
             raise ExternalServiceError("google_places", f"Falha ao chamar o Google Places: {message}") from exc
         except httpx.HTTPError as exc:
@@ -430,7 +461,7 @@ class GooglePlacesClient:
         field_mask: str,
     ) -> dict[str, Any]:
         start = time.perf_counter()
-        logger.debug("google_places.request.start method=GET path=%s", path)
+        logger.info("google_places.request.start method=GET path=%s", path)
         try:
             response = await self._http_client.get(
                 f"{self._settings.google_places_base_url}/{path}",
@@ -442,22 +473,40 @@ class GooglePlacesClient:
             )
             response.raise_for_status()
             duration_ms = (time.perf_counter() - start) * 1000
+            response_body = (
+                response_preview(
+                    response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.info(
-                "google_places.request.end method=GET path=%s status=%s duration_ms=%.2f",
+                "google_places.request.end method=GET path=%s status=%s duration_ms=%.2f response=%s",
                 path,
                 response.status_code,
                 duration_ms,
+                response_body,
             )
         except httpx.TimeoutException as exc:
             logger.warning("google_places.request.timeout method=GET path=%s", path)
             raise ExternalServiceError("google_places", "Timeout ao chamar o Google Places.") from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            error_body = (
+                response_preview(
+                    exc.response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.warning(
-                "google_places.request.http_error method=GET path=%s status=%s message=%s",
+                "google_places.request.http_error method=GET path=%s status=%s message=%s response=%s",
                 path,
                 exc.response.status_code,
                 message,
+                error_body,
             )
             raise ExternalServiceError("google_places", f"Falha ao chamar o Google Places: {message}") from exc
         except httpx.HTTPError as exc:
@@ -476,7 +525,15 @@ class GooglePlacesClient:
 
     async def _search_nearby(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         start = time.perf_counter()
-        logger.debug("google_places.search_nearby.request.start")
+        request_body = (
+            payload_preview(
+                payload,
+                max_chars=self._settings.log_integration_max_chars,
+            )
+            if self._settings.log_integration_payloads
+            else None
+        )
+        logger.info("google_places.search_nearby.request.start body=%s", request_body)
         try:
             response = await self._http_client.post(
                 f"{self._settings.google_places_base_url}/places:searchNearby",
@@ -490,10 +547,19 @@ class GooglePlacesClient:
             )
             response.raise_for_status()
             duration_ms = (time.perf_counter() - start) * 1000
+            response_body = (
+                response_preview(
+                    response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.info(
-                "google_places.search_nearby.request.end status=%s duration_ms=%.2f",
+                "google_places.search_nearby.request.end status=%s duration_ms=%.2f response=%s",
                 response.status_code,
                 duration_ms,
+                response_body,
             )
         except httpx.TimeoutException as exc:
             logger.warning("google_places.search_nearby.request.timeout")
@@ -503,10 +569,19 @@ class GooglePlacesClient:
             ) from exc
         except httpx.HTTPStatusError as exc:
             message = self._extract_error_message(exc.response)
+            error_body = (
+                response_preview(
+                    exc.response,
+                    max_chars=self._settings.log_integration_max_chars,
+                )
+                if self._settings.log_integration_payloads
+                else None
+            )
             logger.warning(
-                "google_places.search_nearby.request.http_error status=%s message=%s",
+                "google_places.search_nearby.request.http_error status=%s message=%s response=%s",
                 exc.response.status_code,
                 message,
+                error_body,
             )
             raise ExternalServiceError(
                 "google_places",
@@ -726,15 +801,29 @@ class GooglePlacesClient:
         if not photo_name:
             return None
 
+        params = {
+            "key": self._settings.google_maps_api_key,
+            "maxWidthPx": self._settings.google_places_photo_max_width,
+            "maxHeightPx": self._settings.google_places_photo_max_height,
+            "skipHttpRedirect": "true",
+        }
+        request_params = (
+            payload_preview(
+                params,
+                max_chars=self._settings.log_integration_max_chars,
+            )
+            if self._settings.log_integration_payloads
+            else None
+        )
+        logger.info(
+            "google_places.photo.request.start photo_name=%s params=%s",
+            photo_name,
+            request_params,
+        )
         try:
             response = await self._http_client.get(
                 f"{self._settings.google_places_base_url}/{photo_name}/media",
-                params={
-                    "key": self._settings.google_maps_api_key,
-                    "maxWidthPx": self._settings.google_places_photo_max_width,
-                    "maxHeightPx": self._settings.google_places_photo_max_height,
-                    "skipHttpRedirect": "true",
-                },
+                params=params,
                 timeout=self._settings.google_places_timeout_seconds,
             )
             response.raise_for_status()
@@ -746,6 +835,20 @@ class GooglePlacesClient:
             )
             return None
 
+        response_body = (
+            response_preview(
+                response,
+                max_chars=self._settings.log_integration_max_chars,
+            )
+            if self._settings.log_integration_payloads
+            else None
+        )
+        logger.info(
+            "google_places.photo.request.end photo_name=%s status=%s response=%s",
+            photo_name,
+            response.status_code,
+            response_body,
+        )
         payload = response.json()
         photo_uri = payload.get("photoUri")
         if isinstance(photo_uri, str) and photo_uri.strip():
