@@ -424,11 +424,29 @@ Campos condicionais:
 - `guia_id` e obrigatorio quando `escopo="guia"`.
 
 Campos opcionais importantes:
+- `perfil_id`: quem disparou o pedido dentro do grupo. Quando enviado, o backend usa para personalizar o historico de sugestoes.
 - `orcamento_max`: `1`, `2`, `3` ou `4`, igual a faixa de preco dos lugares.
 - `mood`: texto livre. E o campo mais util para a IA entender o momento.
 - `clima` e `dia_semana`: o front pode preencher manualmente ou via alguma API propria depois.
 - `evitar_lugar_ids`: bom para nao repetir uma escolha recente se o usuario pedir "decide de novo".
 - `max_candidatos`: limite de restaurantes enviados para a IA. Maximo atual: `100`.
+
+#### Historico automatico
+
+O backend mantem internamente um historico de cada restaurante oferecido pela IA
+(decisao, recomendacao por mensagem ou home "today") e usa essa informacao para:
+
+- nao repetir o mesmo restaurante no mesmo dia (janela de 24h, aplicada
+  automaticamente para o `grupo_id`);
+- evitar repetir o mesmo restaurante na mesma semana (janela de 7 dias,
+  relaxada automaticamente quando nao ha alternativa suficiente);
+- enriquecer o prompt da IA com as cozinhas e moods mais frequentes do grupo
+  para que a justificativa fique pessoal ("Esta semana voces foram em mais
+  italianos, hoje proponho algo diferente").
+
+O frontend nao precisa fazer nada novo - basta enviar `grupo_id` (e idealmente
+`perfil_id`). O campo `evitar_lugar_ids` continua disponivel quando o usuario
+pedir explicitamente "decide de novo".
 
 ### Exemplo: favoritos
 

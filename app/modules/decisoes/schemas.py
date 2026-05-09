@@ -56,13 +56,14 @@ class DecidirRestauranteRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     grupo_id: str = Field(..., min_length=8, max_length=64)
+    perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
     escopo: EscopoDecisao = EscopoDecisao.TODOS
     guia_id: str | None = Field(default=None, min_length=8, max_length=64)
     criterios: CriteriosDecisao = Field(default_factory=CriteriosDecisao)
     evitar_lugar_ids: list[str] = Field(default_factory=list, max_length=100)
     max_candidatos: int = Field(default=80, ge=1, le=100)
 
-    @field_validator("grupo_id", "guia_id", mode="before")
+    @field_validator("grupo_id", "perfil_id", "guia_id", mode="before")
     @classmethod
     def vazio_para_none(cls, value: str | None) -> str | None:
         if isinstance(value, str):

@@ -9,6 +9,7 @@ from app.integrations.supabase.no_auth_guia_ai import SupabaseNoAuthGuiaAiMixin
 from app.integrations.supabase.no_auth_guias import SupabaseNoAuthGuiasMixin
 from app.integrations.supabase.no_auth_lugares import SupabaseNoAuthLugaresMixin
 from app.integrations.supabase.no_auth_perfis import SupabaseNoAuthPerfisMixin
+from app.integrations.supabase.no_auth_sugestoes_ia import SupabaseNoAuthSugestoesIaMixin
 from app.integrations.supabase.rpc import SupabaseRpcMixin
 
 
@@ -18,6 +19,7 @@ class SupabaseClient(
     SupabaseNoAuthLugaresMixin,
     SupabaseNoAuthGuiasMixin,
     SupabaseNoAuthGuiaAiMixin,
+    SupabaseNoAuthSugestoesIaMixin,
     SupabaseLegacyPlacesMixin,
     SupabaseLegacyGroupsMixin,
     SupabaseAuthMixin,

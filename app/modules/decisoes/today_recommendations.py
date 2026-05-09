@@ -11,6 +11,7 @@ from app.core.errors import NotFoundError
 from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
+from app.modules.decisoes import historico
 from app.modules.decisoes.schemas import (
     TodayRecommendationItem,
     TodayRecommendationsRequest,
@@ -36,10 +37,15 @@ _PRICE_LEVEL_MAP = {
 class TodayRecommendationsUseCase:
     SYSTEM_PROMPT = (
         "Voce e um concierge gastronomico do app Comidinhas. "
-        "Escolha restaurantes novos para o perfil entre candidatos do Google Places. "
-        "Use somente candidato_id recebido. Priorize avaliacao, volume de reviews, lugar aberto "
-        "e boa combinacao com o clima/humor."
+        "Escolha restaurantes novos para o perfil entre candidatos do Google Places "
+        "e escreva uma justificativa pessoal, calorosa e especifica para cada um, "
+        "como se voce conhecesse o gosto deste grupo. "
+        "Use somente candidato_id recebido. Priorize avaliacao, volume de reviews, "
+        "lugar aberto e boa combinacao com o clima/humor. "
+        "Evite frases genericas como 'boa avaliacao' - destaque um detalhe "
+        "concreto do lugar e conecte com o momento ou com o historico recente."
     )
+    FONTE = "today_recommendations"
     RANKING_SCHEMA: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
@@ -80,6 +86,9 @@ class TodayRecommendationsUseCase:
             raise NotFoundError("Grupo nao encontrado.")
 
         saved_places = await self._load_saved_places(request.grupo_id)
+        contexto = await historico.carregar_contexto(
+            supabase_client=self._supabase, grupo_id=request.grupo_id
+        )
         nearby = await self._google.search_nearby_restaurants(
             NearbyRestaurantsRequest(
                 latitude=request.latitude,
@@ -92,11 +101,16 @@ class TodayRecommendationsUseCase:
         )
 
         fresh = self._exclude_saved(nearby, saved_places)
+        fresh = self._exclude_history(fresh, contexto)
         candidates = self._quality_candidates(fresh)
         if len(candidates) < request.limit:
             candidates = self._fill_with_available(candidates=candidates, fresh=fresh, limit=request.limit)
 
-        ranked = await self._rank_with_ai(request=request, candidates=candidates)
+        ranked = await self._rank_with_ai(
+            request=request,
+            candidates=candidates,
+            contexto=contexto,
+        )
         by_candidate_id = {f"google:{place.id}": place for place in candidates}
         places = [
             self._to_response_item(
@@ -107,6 +121,29 @@ class TodayRecommendationsUseCase:
             for item in ranked
             if item["candidato_id"] in by_candidate_id
         ][: request.limit]
+
+        await historico.registrar_sugestoes(
+            supabase_client=self._supabase,
+            grupo_id=request.grupo_id,
+            perfil_id=request.perfil_id,
+            fonte=self.FONTE,
+            modelo=self._model,
+            criterios={
+                "mood": request.mood,
+                "weather": request.weather,
+                "latitude": request.latitude,
+                "longitude": request.longitude,
+            },
+            sugestoes=[
+                {
+                    "nome": place.name,
+                    "google_place_id": place.google_place_id,
+                    "origem": "google",
+                    "motivo": place.recommendation_reason,
+                }
+                for place in places
+            ],
+        )
 
         return TodayRecommendationsResponse(
             generated_at=datetime.now(timezone.utc).isoformat(),
@@ -132,9 +169,13 @@ class TodayRecommendationsUseCase:
         *,
         request: TodayRecommendationsRequest,
         candidates: list[NearbyRestaurant],
+        contexto: historico.HistoricoContexto,
     ) -> list[dict[str, str]]:
         if not candidates:
             return []
+
+        personalizacao = contexto.resumo_personalizacao()
+        nomes_recentes = [sug.nome for sug in contexto.sugestoes if sug.nome][:8]
 
         prompt = json.dumps(
             {
@@ -144,9 +185,17 @@ class TodayRecommendationsUseCase:
                 "regras": [
                     "Escolha exatamente max_resultados quando houver candidatos suficientes.",
                     "Nao escolha candidatos duplicados.",
-                    "Todos os candidatos ja foram filtrados para nao existirem no perfil/grupo.",
+                    "Todos os candidatos ja foram filtrados para nao existirem no perfil/grupo nem aparecerem no historico recente.",
+                    "Para cada escolhido, escreva 'reason' com 1 a 2 frases pessoais, em portugues, com um detalhe concreto do lugar e uma conexao com o mood, clima, ou com a variacao em relacao ao historico (ex: 'Esta semana voces foram em japones, hoje quebro o padrao com este italiano de massa fresca').",
+                    "Evite chavoes como 'boa avaliacao', 'bem avaliado', 'otima opcao'. Prefira detalhes especificos.",
                     "Prefira rating alto, muitos reviews, foto, link do Maps e aberto agora.",
                 ],
+                "historico": {
+                    "ultimas": nomes_recentes,
+                    "cozinhas_frequentes": personalizacao.get("cozinhas_frequentes", []),
+                    "moods_frequentes": personalizacao.get("moods_frequentes", []),
+                    "total_sugestoes_30d": personalizacao.get("total_sugestoes_30d", 0),
+                },
                 "candidatos": [self._candidate_prompt(place) for place in candidates[:15]],
             },
             ensure_ascii=False,
@@ -201,6 +250,34 @@ class TodayRecommendationsUseCase:
             and place.google_maps_uri not in saved_links
             and _normalize(place.display_name) not in saved_names
         ]
+
+    @staticmethod
+    def _exclude_history(
+        candidates: list[NearbyRestaurant],
+        contexto: historico.HistoricoContexto,
+    ) -> list[NearbyRestaurant]:
+        evitar_dia = contexto.google_evitar_dia()
+        evitar_semana = contexto.google_evitar_semana()
+        nomes_recentes = {
+            _normalize(sug.nome)
+            for sug in contexto.sugestoes
+            if sug.nome and sug.criado_em is not None
+            and (contexto.agora - sug.criado_em).total_seconds() < historico.WINDOW_DAY_HOURS * 3600
+        }
+
+        # Janela de 24h: sempre exclui (ids E nomes).
+        passo_dia = [
+            place
+            for place in candidates
+            if place.id not in evitar_dia
+            and _normalize(place.display_name) not in nomes_recentes
+        ]
+        # Janela de 7d: exclui se ainda sobrar gente para escolher.
+        if evitar_semana:
+            passo_semana = [place for place in passo_dia if place.id not in evitar_semana]
+            if passo_semana:
+                return passo_semana
+        return passo_dia
 
     @staticmethod
     def _quality_candidates(candidates: list[NearbyRestaurant]) -> list[NearbyRestaurant]:
@@ -295,4 +372,7 @@ def _normalize(value: str | None) -> str:
 
 
 def _default_reason() -> str:
-    return "Boa avaliacao, bom volume de reviews e ainda nao esta salvo neste perfil."
+    return (
+        "Escolhi este pensando em algo novo pra hoje - tem boa reputacao "
+        "no bairro e ainda nao apareceu por aqui."
+    )
