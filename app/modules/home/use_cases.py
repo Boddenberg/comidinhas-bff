@@ -12,6 +12,7 @@ from app.modules.home.schemas import (
     HomeResponse,
     LugarResumo,
 )
+from app.modules.google_places.place_types import normalize_category_label
 
 _STATUS_VISITADO = {"fomos", "quero_voltar", "nao_curti"}
 
@@ -87,7 +88,7 @@ def _mapear(raw: dict[str, Any]) -> LugarResumo:
     return LugarResumo(
         id=str(raw.get("id", "")),
         nome=str(raw.get("nome", "")),
-        categoria=raw.get("categoria"),
+        categoria=normalize_category_label(raw.get("categoria")),
         bairro=raw.get("bairro"),
         cidade=raw.get("cidade"),
         faixa_preco=raw.get("faixa_preco"),

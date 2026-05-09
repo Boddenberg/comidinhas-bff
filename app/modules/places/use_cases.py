@@ -4,6 +4,7 @@ from typing import Any
 
 from app.core.errors import BadRequestError, NotFoundError
 from app.integrations.supabase.client import SupabaseClient
+from app.modules.google_places.place_types import normalize_category_label
 from app.modules.places.schemas import (
     PlaceCreateRequest,
     PlaceCreatorResponse,
@@ -117,7 +118,7 @@ class ManagePlacesUseCase:
             id=str(raw.get("id", "")),
             group_id=str(raw.get("group_id", "")),
             name=str(raw.get("name", "")),
-            category=raw.get("category"),
+            category=normalize_category_label(raw.get("category")),
             neighborhood=raw.get("neighborhood"),
             city=raw.get("city"),
             price_range=raw.get("price_range"),

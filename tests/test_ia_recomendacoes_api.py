@@ -92,6 +92,7 @@ class FakeGoogleClient:
                 user_rating_count=320,
                 price_level="PRICE_LEVEL_MODERATE",
                 primary_type="middle_eastern_restaurant",
+                primary_type_display_name="Restaurante arabe",
                 google_maps_uri="https://maps.google.com/?cid=1",
                 open_now=True,
             )
@@ -164,6 +165,12 @@ async def test_recomendar_restaurantes_mistura_supabase_e_google() -> None:
     assert fake_google.requests
     assert "arabe" in fake_google.requests[0].text_query
     assert "Sao Paulo" in fake_google.requests[0].text_query
+    google_option = next(
+        item
+        for item in response.opcoes
+        if item.restaurante.origem == OrigemCandidato.GOOGLE
+    )
+    assert google_option.restaurante.categoria == "Restaurante arabe"
 
 
 @pytest.mark.anyio

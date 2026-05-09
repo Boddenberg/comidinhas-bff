@@ -42,6 +42,7 @@ async def test_openai_client_extracts_output_text() -> None:
 async def test_google_places_client_maps_places_and_photo_uri() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/places:searchNearby"):
+            assert "places.primaryTypeDisplayName" in request.headers["X-Goog-FieldMask"]
             return httpx.Response(
                 status_code=200,
                 json={
@@ -58,6 +59,7 @@ async def test_google_places_client_maps_places_and_photo_uri() -> None:
                             "userRatingCount": 120,
                             "priceLevel": "PRICE_LEVEL_MODERATE",
                             "primaryType": "restaurant",
+                            "primaryTypeDisplayName": {"text": "Restaurante"},
                             "googleMapsUri": "https://maps.google.com/?cid=1",
                             "photos": [
                                 {
@@ -124,12 +126,16 @@ async def test_google_places_client_maps_places_and_photo_uri() -> None:
     assert response[0].photos[0].attributions[0].display_name == "Autor Teste"
     assert response[0].photos[1].photo_uri == "https://images.example.com/place-1-2.jpg"
     assert response[0].open_now is True
+    assert response[0].primary_type == "restaurant"
+    assert response[0].primary_type_display_name == "Restaurante"
 
 
 @pytest.mark.anyio
 async def test_google_places_client_maps_place_details_photos() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/places/place-1"):
+            assert request.url.params["languageCode"] == "pt-BR"
+            assert request.url.params["regionCode"] == "BR"
             return httpx.Response(
                 status_code=200,
                 json={
@@ -137,6 +143,7 @@ async def test_google_places_client_maps_place_details_photos() -> None:
                     "displayName": {"text": "Cantina Central"},
                     "formattedAddress": "Rua A, 123",
                     "primaryType": "restaurant",
+                    "primaryTypeDisplayName": {"text": "Restaurante"},
                     "photos": [
                         {
                             "name": "places/place-1/photos/photo-1",
@@ -180,6 +187,7 @@ async def test_google_places_client_maps_place_details_photos() -> None:
         response = await google_places_client.get_place_details("place-1")
 
     assert response.photo_uri == "https://images.example.com/place-1.jpg"
+    assert response.primary_type_display_name == "Restaurante"
     assert [photo.photo_uri for photo in response.photos] == [
         "https://images.example.com/place-1.jpg",
         "https://images.example.com/place-1-2.jpg",
@@ -195,6 +203,7 @@ async def test_google_places_client_searches_restaurants_by_text() -> None:
         if request.url.path.endswith("/places:searchText"):
             seen_body = json.loads(request.content.decode())
             assert request.headers["X-Goog-FieldMask"].startswith("places.id")
+            assert "places.primaryTypeDisplayName" in request.headers["X-Goog-FieldMask"]
             return httpx.Response(
                 status_code=200,
                 json={
@@ -207,6 +216,7 @@ async def test_google_places_client_searches_restaurants_by_text() -> None:
                             "userRatingCount": 450,
                             "priceLevel": "PRICE_LEVEL_MODERATE",
                             "primaryType": "middle_eastern_restaurant",
+                            "primaryTypeDisplayName": {"text": "Restaurante do Oriente Medio"},
                             "googleMapsUri": "https://maps.google.com/?cid=1",
                             "regularOpeningHours": {"openNow": True},
                         }
@@ -244,6 +254,8 @@ async def test_google_places_client_searches_restaurants_by_text() -> None:
     assert seen_body["pageSize"] == 5
     assert response[0].display_name == "Arabe Central"
     assert response[0].open_now is True
+    assert response[0].primary_type == "middle_eastern_restaurant"
+    assert response[0].primary_type_display_name == "Restaurante do Oriente Medio"
 
 
 @pytest.mark.anyio

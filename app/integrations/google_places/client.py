@@ -25,6 +25,7 @@ from app.modules.google_places.schemas import (
     RestaurantLocation,
     TextSearchRestaurantsRequest,
 )
+from app.modules.google_places.place_types import friendly_place_type
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class GooglePlacesClient:
             "places.userRatingCount",
             "places.priceLevel",
             "places.primaryType",
+            "places.primaryTypeDisplayName",
             "places.googleMapsUri",
             "places.websiteUri",
             "places.nationalPhoneNumber",
@@ -196,7 +198,11 @@ class GooglePlacesClient:
     ) -> PlaceDetailsResponse:
         self._ensure_api_key()
         logger.info("google_places.details.start place_id=%s", place_id)
-        raw = await self._get_json(f"places/{place_id}", field_mask=self.DETAILS_FIELD_MASK)
+        raw = await self._get_json(
+            f"places/{place_id}",
+            field_mask=self.DETAILS_FIELD_MASK,
+            params=self._default_place_params(),
+        )
         details = self._map_place_details(raw, place_id=place_id)
         photos = await self._fetch_place_photos(raw.get("photos"))
         logger.info(
@@ -213,7 +219,11 @@ class GooglePlacesClient:
 
     async def get_place_details_raw(self, place_id: str) -> dict[str, Any]:
         self._ensure_api_key()
-        return await self._get_json(f"places/{place_id}", field_mask=self.DETAILS_FIELD_MASK)
+        return await self._get_json(
+            f"places/{place_id}",
+            field_mask=self.DETAILS_FIELD_MASK,
+            params=self._default_place_params(),
+        )
 
     # ---------------------------------------------------------------- helpers
 
@@ -227,6 +237,12 @@ class GooglePlacesClient:
                 },
                 "radius": float(bias.radius_meters),
             }
+        }
+
+    def _default_place_params(self) -> dict[str, str]:
+        return {
+            "languageCode": self._settings.google_places_default_language_code,
+            "regionCode": self._settings.google_places_default_region_code,
         }
 
     def _map_place_prediction(
@@ -288,9 +304,8 @@ class GooglePlacesClient:
             raw.get("addressComponents") or [],
         )
 
-        primary_type_name = raw.get("primaryTypeDisplayName")
-        if isinstance(primary_type_name, dict):
-            primary_type_name = primary_type_name.get("text")
+        primary_type = self._extract_string(raw, "primaryType")
+        primary_type_name = self._extract_text_value(raw.get("primaryTypeDisplayName"))
 
         return PlaceDetailsResponse(
             place_id=place_id,
@@ -303,8 +318,8 @@ class GooglePlacesClient:
             user_rating_count=self._extract_int(raw, "userRatingCount"),
             price_level=self._extract_string(raw, "priceLevel"),
             price_range=self._map_price_level(raw.get("priceLevel")),
-            primary_type=self._extract_string(raw, "primaryType"),
-            primary_type_display_name=primary_type_name if isinstance(primary_type_name, str) else None,
+            primary_type=primary_type,
+            primary_type_display_name=friendly_place_type(primary_type, primary_type_name),
             google_maps_uri=self._extract_string(raw, "googleMapsUri"),
             website_uri=self._extract_string(raw, "websiteUri"),
             phone_number=self._extract_string(raw, "nationalPhoneNumber"),
@@ -459,6 +474,7 @@ class GooglePlacesClient:
         path: str,
         *,
         field_mask: str,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         start = time.perf_counter()
         logger.info("google_places.request.start method=GET path=%s", path)
@@ -469,6 +485,7 @@ class GooglePlacesClient:
                     "X-Goog-Api-Key": self._settings.google_maps_api_key or "",
                     "X-Goog-FieldMask": field_mask,
                 },
+                params=params,
                 timeout=self._settings.google_places_timeout_seconds,
             )
             response.raise_for_status()
@@ -678,6 +695,8 @@ class GooglePlacesClient:
     def _map_place(self, payload: dict[str, Any]) -> NearbyRestaurant:
         location = payload.get("location")
         photo = self._extract_first_photo(payload)
+        primary_type = self._extract_string(payload, "primaryType")
+        primary_type_name = self._extract_text_value(payload.get("primaryTypeDisplayName"))
 
         return NearbyRestaurant(
             id=str(payload.get("id", "")),
@@ -687,7 +706,8 @@ class GooglePlacesClient:
             rating=self._extract_float(payload, "rating"),
             user_rating_count=self._extract_int(payload, "userRatingCount"),
             price_level=self._extract_string(payload, "priceLevel"),
-            primary_type=self._extract_string(payload, "primaryType"),
+            primary_type=primary_type,
+            primary_type_display_name=friendly_place_type(primary_type, primary_type_name),
             google_maps_uri=self._extract_string(payload, "googleMapsUri"),
             website_uri=self._extract_string(payload, "websiteUri"),
             phone_number=self._extract_string(payload, "nationalPhoneNumber"),
@@ -698,12 +718,17 @@ class GooglePlacesClient:
 
     @staticmethod
     def _extract_display_name(payload: dict[str, Any]) -> str:
-        display_name = payload.get("displayName")
-        if isinstance(display_name, dict):
-            text = display_name.get("text")
-            if isinstance(text, str):
-                return text
-        return ""
+        return GooglePlacesClient._extract_text_value(payload.get("displayName")) or ""
+
+    @staticmethod
+    def _extract_text_value(value: Any) -> str | None:
+        if isinstance(value, dict):
+            text = value.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
 
     @staticmethod
     def _extract_first_photo(payload: dict[str, Any]) -> dict[str, Any] | None:

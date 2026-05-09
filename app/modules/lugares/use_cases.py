@@ -18,6 +18,7 @@ from app.modules.lugares.schemas import (
     ReordenarFotosRequest,
     StatusLugar,
 )
+from app.modules.google_places.place_types import normalize_category_label
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,7 @@ class ManageLugaresUseCase:
             id=str(raw.get("id", "")),
             grupo_id=str(raw.get("grupo_id", "")),
             nome=str(raw.get("nome", "")),
-            categoria=raw.get("categoria"),
+            categoria=normalize_category_label(raw.get("categoria")),
             bairro=raw.get("bairro"),
             cidade=raw.get("cidade"),
             faixa_preco=raw.get("faixa_preco"),

@@ -29,6 +29,7 @@ from app.modules.google_places.schemas import (
     TextSearchRestaurantsRequest,
     TextSearchRankPreference,
 )
+from app.modules.google_places.place_types import friendly_place_type
 from app.modules.lugares.schemas import LugarResponse, StatusLugar
 from app.modules.lugares.use_cases import ManageLugaresUseCase
 
@@ -545,7 +546,10 @@ class RecomendarRestaurantesUseCase:
             origem=OrigemCandidato.GOOGLE,
             google_place_id=place.id,
             nome=place.display_name,
-            categoria=place.primary_type,
+            categoria=friendly_place_type(
+                place.primary_type,
+                place.primary_type_display_name,
+            ),
             cidade=localizacao.cidade if localizacao else None,
             endereco=place.formatted_address,
             faixa_preco=_map_price_level(place.price_level),

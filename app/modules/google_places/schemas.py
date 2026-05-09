@@ -55,6 +55,7 @@ class NearbyRestaurant(BaseModel):
     user_rating_count: int | None = None
     price_level: str | None = None
     primary_type: str | None = None
+    primary_type_display_name: str | None = None
     google_maps_uri: str | None = None
     website_uri: str | None = None
     phone_number: str | None = None

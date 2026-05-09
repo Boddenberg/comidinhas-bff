@@ -12,6 +12,7 @@ from app.modules.google_places.schemas import (
     PlaceDetailsResponse,
     SaveFromGoogleRequest,
 )
+from app.modules.google_places.place_types import friendly_place_type
 from app.modules.lugares.schemas import LugarResponse
 from app.modules.lugares.use_cases import ManageLugaresUseCase
 
@@ -107,7 +108,10 @@ class SavePlaceFromGoogleUseCase:
         payload = {
             "grupo_id": request.grupo_id,
             "nome": details.display_name or request.place_id,
-            "categoria": details.primary_type_display_name or details.primary_type,
+            "categoria": friendly_place_type(
+                details.primary_type,
+                details.primary_type_display_name,
+            ),
             "bairro": details.neighborhood,
             "cidade": details.city,
             "faixa_preco": details.price_range,
@@ -126,6 +130,8 @@ class SavePlaceFromGoogleUseCase:
                 "website_uri": details.website_uri,
                 "phone_number": details.phone_number,
                 "open_now": details.open_now,
+                "primary_type": details.primary_type,
+                "primary_type_display_name": details.primary_type_display_name,
                 "types": details.types,
             },
         }

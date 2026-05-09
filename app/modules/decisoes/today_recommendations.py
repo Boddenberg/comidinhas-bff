@@ -16,6 +16,7 @@ from app.modules.decisoes.schemas import (
     TodayRecommendationsRequest,
     TodayRecommendationsResponse,
 )
+from app.modules.google_places.place_types import friendly_place_type
 from app.modules.google_places.schemas import NearbyRestaurant, NearbyRestaurantsRequest, RankPreference
 from app.modules.lugares.schemas import LugarResponse
 from app.modules.lugares.use_cases import ManageLugaresUseCase
@@ -238,7 +239,10 @@ class TodayRecommendationsUseCase:
         return {
             "candidato_id": f"google:{place.id}",
             "nome": place.display_name,
-            "categoria": place.primary_type,
+            "categoria": friendly_place_type(
+                place.primary_type,
+                place.primary_type_display_name,
+            ),
             "endereco": place.formatted_address,
             "rating": place.rating,
             "user_rating_count": place.user_rating_count,
@@ -260,7 +264,10 @@ class TodayRecommendationsUseCase:
             google_place_id=place.id,
             group_id=grupo_id,
             name=place.display_name,
-            category=place.primary_type,
+            category=friendly_place_type(
+                place.primary_type,
+                place.primary_type_display_name,
+            ),
             price_range=_PRICE_LEVEL_MAP.get(place.price_level or ""),
             link=place.google_maps_uri or place.website_uri,
             notes=reason,
