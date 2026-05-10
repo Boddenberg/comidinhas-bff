@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 
 from app.api.dependencies import (
     get_decidir_restaurante_use_case,
     get_recomendar_restaurantes_use_case,
+    get_registrar_feedback_sugestao_use_case,
 )
+from app.modules.decisoes.feedback_use_case import RegistrarFeedbackSugestaoUseCase
 from app.modules.decisoes.recomendacoes import RecomendarRestaurantesUseCase
 from app.modules.decisoes.schemas import (
     DecidirRestauranteRequest,
     DecidirRestauranteResponse,
     RecomendarRestaurantesRequest,
     RecomendarRestaurantesResponse,
+    SugestaoFeedbackRequest,
+    SugestaoFeedbackResponse,
 )
 from app.modules.decisoes.use_cases import DecidirRestauranteUseCase
 
@@ -40,3 +44,18 @@ async def recomendar_restaurantes(
     use_case: RecomendarRestaurantesUseCase = Depends(get_recomendar_restaurantes_use_case),
 ) -> RecomendarRestaurantesResponse:
     return await use_case.execute(request=request)
+
+
+@router.post(
+    "/sugestoes/{sugestao_id}/feedback",
+    response_model=SugestaoFeedbackResponse,
+    summary="Registra feedback do usuario sobre uma sugestao da IA",
+)
+async def registrar_feedback_sugestao(
+    request: SugestaoFeedbackRequest,
+    sugestao_id: str = Path(..., min_length=8, max_length=64),
+    use_case: RegistrarFeedbackSugestaoUseCase = Depends(
+        get_registrar_feedback_sugestao_use_case
+    ),
+) -> SugestaoFeedbackResponse:
+    return await use_case.execute(sugestao_id=sugestao_id, request=request)

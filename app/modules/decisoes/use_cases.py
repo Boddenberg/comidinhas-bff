@@ -8,11 +8,13 @@ from typing import Any
 from app.core.errors import BadRequestError, ExternalServiceError, NotFoundError
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
+from app.modules.decisoes import historico
 from app.modules.decisoes.schemas import (
     DecidirRestauranteRequest,
     DecidirRestauranteResponse,
     DecisaoRestauranteItem,
     EscopoDecisao,
+    ModoSugestao,
 )
 from app.modules.lugares.schemas import LugarResponse
 from app.modules.lugares.use_cases import ManageLugaresUseCase
@@ -23,9 +25,14 @@ logger = logging.getLogger(__name__)
 class DecidirRestauranteUseCase:
     SYSTEM_PROMPT = (
         "Voce e um concierge gastronomico do app Comidinhas. "
-        "Escolha um restaurante a partir de candidatos estruturados. "
+        "Escolha um restaurante a partir de candidatos estruturados e escreva "
+        "uma justificativa calorosa, pessoal e especifica - como se voce "
+        "estivesse falando com um amigo proximo, conectando o lugar ao momento "
+        "atual dele (mood, clima, dia, ocasiao, historico recente). "
+        "Evite frases genericas como 'boa opcao' ou 'combina com o pedido'. "
         "Responda somente JSON valido, sem markdown, sem texto fora do JSON."
     )
+    FONTE = "decidir_restaurante"
 
     def __init__(
         self,
@@ -46,20 +53,86 @@ class DecidirRestauranteUseCase:
             request.guia_id,
         )
         candidatos = await self._carregar_candidatos(request=request)
-        evitar = set(request.evitar_lugar_ids)
-        candidatos = [lugar for lugar in candidatos if lugar.id not in evitar]
+        contexto = await historico.carregar_contexto(
+            supabase_client=self._supabase, grupo_id=request.grupo_id
+        )
+        # Os candidatos sao lugares salvos do grupo - servem tambem como
+        # sinal de gosto (favoritos, quero_voltar, nao_curti).
+        contexto.lugares_signal = [self._lugar_signal(lugar) for lugar in candidatos]
+        preferencias = contexto.preferencias_inferidas()
+
+        evitar_request = set(request.evitar_lugar_ids)
+        evitar_dia = contexto.lugares_evitar_dia()
+        evitar_semana = contexto.lugares_evitar_semana()
+
+        candidatos_originais = candidatos
+        # Hard exclusion: nao repetir nada do dia.
+        candidatos = [
+            lugar for lugar in candidatos
+            if lugar.id not in evitar_request and lugar.id not in evitar_dia
+        ]
+        # Soft exclusion: tirar tambem o que apareceu na semana, mas com
+        # fallback se isso esvaziar a lista.
+        if evitar_semana:
+            filtrados_semana = [lugar for lugar in candidatos if lugar.id not in evitar_semana]
+            if filtrados_semana:
+                candidatos = filtrados_semana
+            else:
+                logger.info(
+                    "decisoes.decidir_restaurante.semana_relaxada grupo_id=%s "
+                    "candidatos_apos_dia=%s",
+                    request.grupo_id,
+                    len(candidatos),
+                )
+
         logger.info(
-            "decisoes.decidir_restaurante.candidatos grupo_id=%s escopo=%s total=%s evitados=%s",
+            "decisoes.decidir_restaurante.candidatos grupo_id=%s escopo=%s "
+            "total=%s evitados_request=%s evitados_dia=%s evitados_semana=%s "
+            "originais=%s",
             request.grupo_id,
             request.escopo.value,
             len(candidatos),
-            len(evitar),
+            len(evitar_request),
+            len(evitar_dia),
+            len(evitar_semana),
+            len(candidatos_originais),
         )
 
         if not candidatos:
-            raise BadRequestError("Nao ha restaurantes candidatos para este escopo.")
+            # Se a janela de 24h esvaziou tudo, relaxa pra nao bloquear o usuario.
+            candidatos = [
+                lugar for lugar in candidatos_originais
+                if lugar.id not in evitar_request
+            ]
+            if not candidatos:
+                raise BadRequestError("Nao ha restaurantes candidatos para este escopo.")
+            logger.info(
+                "decisoes.decidir_restaurante.dia_relaxado grupo_id=%s total=%s",
+                request.grupo_id,
+                len(candidatos),
+            )
 
-        prompt = self._build_prompt(request=request, candidatos=candidatos)
+        # Filtra duro o que o usuario ja recusou.
+        if preferencias.lugares_recusados_ids:
+            sem_recusados = [
+                lugar for lugar in candidatos
+                if lugar.id not in preferencias.lugares_recusados_ids
+            ]
+            if sem_recusados:
+                candidatos = sem_recusados
+
+        # Modo descoberta: prioriza quero_ir e desfavorece o que ja foi visitado.
+        # Modo conforto: prioriza favoritos / quero_voltar.
+        candidatos = self._aplicar_modo(
+            candidatos=candidatos, modo=request.criterios.modo
+        )
+
+        prompt = self._build_prompt(
+            request=request,
+            candidatos=candidatos,
+            contexto=contexto,
+            preferencias=preferencias,
+        )
         raw_reply = await self._openai.chat(
             prompt=prompt,
             system_prompt=self.SYSTEM_PROMPT,
@@ -81,6 +154,20 @@ class DecidirRestauranteUseCase:
             escolha.lugar.id,
             len(alternativas),
         )
+
+        persisted = await historico.registrar_sugestoes(
+            supabase_client=self._supabase,
+            grupo_id=request.grupo_id,
+            perfil_id=request.perfil_id,
+            fonte=self.FONTE,
+            modelo=self._model,
+            criterios=request.criterios.model_dump(exclude_none=True),
+            sugestoes=[
+                self._sugestao_payload(escolha),
+                *(self._sugestao_payload(alt) for alt in alternativas),
+            ],
+        )
+        self._hidratar_ids([escolha, *alternativas], persistidas=persisted)
 
         return DecidirRestauranteResponse(
             grupo_id=request.grupo_id,
@@ -157,34 +244,54 @@ class DecidirRestauranteUseCase:
         *,
         request: DecidirRestauranteRequest,
         candidatos: list[LugarResponse],
+        contexto: historico.HistoricoContexto,
+        preferencias: historico.PreferenciasInferidas,
     ) -> str:
         criterios = request.criterios.model_dump(exclude_none=True)
         candidatos_payload = [self._lugar_para_prompt(lugar) for lugar in candidatos]
 
+        nomes_recentes = [
+            sug.nome for sug in contexto.sugestoes if sug.nome
+        ][:8]
+        personalizacao = contexto.resumo_personalizacao()
+
         return json.dumps(
             {
-                "tarefa": "Escolha o melhor restaurante para agora.",
+                "tarefa": "Escolha o melhor restaurante para agora e explique como se fosse um concierge proximo.",
                 "regras": [
                     "Use somente lugar_id presente em candidatos.",
-                    "Explique o motivo de forma curta e util para o casal/grupo.",
+                    "Os candidatos ja foram filtrados para nao repetir restaurantes do dia/semana - prefira de fato variar a escolha.",
+                    "Escreva o motivo em primeira pessoa, com 2 a 3 frases, calorosas, especificas e pessoais.",
+                    "Conecte explicitamente a escolha ao mood, clima, dia da semana, ocasiao ou historico quando informados.",
+                    "Quando fizer sentido, contraste com sugestoes recentes em historico.ultimas (ex: 'depois de tanta comida pesada esta semana, hoje vamos de algo mais leve').",
+                    "Use 'preferencias_aprendidas' como pista do que funciona e do que nao funciona pra esse grupo - cite implicitamente quando ajudar.",
+                    "Quando criterios.modo for 'descoberta', priorize abertamente algo novo (status quero_ir, categoria pouco frequente). Quando for 'conforto', priorize um classico do grupo (favorito, quero_voltar).",
+                    "Liste pontos_fortes que tenham um detalhe sensorial ou pratico (ambiente, prato, bairro, horario), nada generico.",
                     "Se orcamento_max existir, evite escolher lugares acima dele, salvo se for muito justificavel.",
                     "Considere mood, clima, dia da semana, ocasiao, preferencias e restricoes quando informados.",
                     "Retorne exatamente um objeto JSON no formato pedido.",
                 ],
                 "escopo": request.escopo.value,
                 "criterios": criterios,
+                "historico": {
+                    "ultimas": nomes_recentes,
+                    "cozinhas_frequentes": personalizacao.get("cozinhas_frequentes", []),
+                    "moods_frequentes": personalizacao.get("moods_frequentes", []),
+                    "total_sugestoes_30d": personalizacao.get("total_sugestoes_30d", 0),
+                },
+                "preferencias_aprendidas": preferencias.to_prompt(),
                 "formato_resposta": {
                     "escolha": {
                         "lugar_id": "id exato do candidato escolhido",
-                        "motivo": "1 a 3 frases",
-                        "pontos_fortes": ["ate 3 pontos"],
+                        "motivo": "2 a 3 frases pessoais, em portugues, conectando lugar ao momento",
+                        "pontos_fortes": ["ate 3 pontos especificos"],
                         "ressalvas": ["ate 2 ressalvas"],
                         "confianca": 0.0,
                     },
                     "alternativas": [
                         {
                             "lugar_id": "id exato de outro candidato",
-                            "motivo": "1 frase",
+                            "motivo": "1 frase com um angulo diferente",
                             "pontos_fortes": [],
                             "ressalvas": [],
                             "confianca": 0.0,
@@ -195,6 +302,59 @@ class DecidirRestauranteUseCase:
             },
             ensure_ascii=False,
         )
+
+    @staticmethod
+    def _lugar_signal(lugar: LugarResponse) -> dict[str, Any]:
+        return {
+            "categoria": lugar.categoria,
+            "bairro": lugar.bairro,
+            "status": lugar.status.value,
+            "favorito": lugar.favorito,
+        }
+
+    @staticmethod
+    def _aplicar_modo(
+        *,
+        candidatos: list[LugarResponse],
+        modo: ModoSugestao,
+    ) -> list[LugarResponse]:
+        if modo == ModoSugestao.AUTO or not candidatos:
+            return candidatos
+
+        from app.modules.lugares.schemas import StatusLugar
+
+        if modo == ModoSugestao.CONFORTO:
+            preferidos = [
+                lugar for lugar in candidatos
+                if lugar.favorito or lugar.status == StatusLugar.QUERO_VOLTAR
+            ]
+            return preferidos or candidatos
+
+        # DESCOBERTA: tira o que ja foi visitado/curtido se ainda houver opcao.
+        novos = [
+            lugar for lugar in candidatos
+            if lugar.status == StatusLugar.QUERO_IR and not lugar.favorito
+        ]
+        return novos or candidatos
+
+    @staticmethod
+    def _hidratar_ids(
+        items: list[DecisaoRestauranteItem],
+        *,
+        persistidas: list[dict[str, Any]],
+    ) -> None:
+        if not persistidas:
+            return
+        por_lugar: dict[str, str] = {}
+        for row in persistidas:
+            lugar_id = row.get("lugar_id")
+            sugestao_id = row.get("id")
+            if isinstance(lugar_id, str) and isinstance(sugestao_id, str):
+                por_lugar.setdefault(lugar_id, sugestao_id)
+        for item in items:
+            sugestao_id = por_lugar.get(item.lugar.id)
+            if sugestao_id:
+                item.sugestao_id = sugestao_id
 
     @staticmethod
     def _lugar_para_prompt(lugar: LugarResponse) -> dict[str, Any]:
@@ -212,6 +372,20 @@ class DecidirRestauranteUseCase:
             "extra": lugar.extra,
         }
 
+    @staticmethod
+    def _sugestao_payload(item: DecisaoRestauranteItem) -> dict[str, Any]:
+        extra = item.lugar.extra if isinstance(item.lugar.extra, dict) else {}
+        google_place_id = extra.get("google_place_id") if isinstance(extra, dict) else None
+        return {
+            "nome": item.lugar.nome,
+            "lugar_id": item.lugar.id,
+            "google_place_id": google_place_id if isinstance(google_place_id, str) else None,
+            "origem": "comidinhas",
+            "motivo": item.motivo,
+            "categoria": item.lugar.categoria,
+            "bairro": item.lugar.bairro,
+        }
+
     def _map_item(self, raw: Any, *, candidatos: list[LugarResponse]) -> DecisaoRestauranteItem:
         if not isinstance(raw, dict):
             raise ExternalServiceError("openai", "A IA nao retornou a escolha no formato esperado.")
@@ -226,7 +400,10 @@ class DecidirRestauranteUseCase:
 
         motivo = raw.get("motivo")
         if not isinstance(motivo, str) or not motivo.strip():
-            motivo = "Escolha sugerida pela IA com base nos criterios enviados."
+            motivo = (
+                f"Escolhi {lugar.nome} pensando em voces agora - "
+                "combina com o momento e ainda nao tinha aparecido por aqui."
+            )
 
         return DecisaoRestauranteItem(
             lugar=lugar,

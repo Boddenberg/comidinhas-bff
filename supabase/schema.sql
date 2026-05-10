@@ -10,6 +10,7 @@ drop table if exists public.place_photos cascade;
 drop table if exists public.places cascade;
 drop table if exists public.group_members cascade;
 drop table if exists public.groups cascade;
+drop table if exists public.sugestoes_ia_historico cascade;
 drop table if exists public.guias cascade;
 drop table if exists public.lugares cascade;
 drop table if exists public.grupos cascade;
@@ -91,6 +92,7 @@ create table public.grupos (
   dono_perfil_id  uuid        references public.perfis (id) on delete set null,
   membros         jsonb       not null default '[]'::jsonb,
   solicitacoes    jsonb       not null default '[]'::jsonb,
+  preferencias_ia jsonb       not null default '{}'::jsonb,
   criado_em       timestamptz not null default now(),
   atualizado_em   timestamptz not null default now()
 );
@@ -157,6 +159,54 @@ create index guias_grupo_idx on public.guias (grupo_id);
 create index guias_lugar_ids_gin_idx on public.guias using gin (lugar_ids);
 
 -- ============================================================
+-- 5b. Tabela: sugestoes_ia_historico
+-- Historico de restaurantes oferecidos pela IA (surpresa,
+-- recomendacao por mensagem, "today" da home). Usado para
+-- evitar repeticao no mesmo dia/semana e para personalizar a
+-- justificativa.
+-- ============================================================
+create table public.sugestoes_ia_historico (
+  id              uuid        primary key default gen_random_uuid(),
+  grupo_id        uuid        not null references public.grupos (id) on delete cascade,
+  perfil_id       uuid        references public.perfis (id) on delete set null,
+  lugar_id        uuid        references public.lugares (id) on delete set null,
+  google_place_id text,
+  nome            text        not null check (char_length(nome) between 1 and 200),
+  origem          text        not null default 'comidinhas'
+                              check (origem in ('comidinhas', 'google')),
+  fonte           text        not null
+                              check (fonte in (
+                                'decidir_restaurante',
+                                'recomendar_restaurantes',
+                                'today_recommendations'
+                              )),
+  posicao         smallint    not null default 1 check (posicao >= 1),
+  criterios       jsonb       not null default '{}'::jsonb,
+  motivo          text        check (motivo is null or char_length(motivo) <= 1200),
+  modelo          text        check (modelo is null or char_length(modelo) <= 80),
+  criado_em       timestamptz not null default now(),
+  feedback        text        check (feedback is null or feedback in ('aceito', 'recusado', 'fui')),
+  feedback_comentario text    check (feedback_comentario is null or char_length(feedback_comentario) <= 500),
+  feedback_em     timestamptz,
+  categoria       text        check (categoria is null or char_length(categoria) <= 80),
+  bairro          text        check (bairro is null or char_length(bairro) <= 80)
+);
+
+create index sugestoes_ia_historico_grupo_idx
+  on public.sugestoes_ia_historico (grupo_id, criado_em desc);
+create index sugestoes_ia_historico_lugar_idx
+  on public.sugestoes_ia_historico (lugar_id)
+  where lugar_id is not null;
+create index sugestoes_ia_historico_google_idx
+  on public.sugestoes_ia_historico (grupo_id, google_place_id, criado_em desc)
+  where google_place_id is not null;
+create index sugestoes_ia_historico_fonte_idx
+  on public.sugestoes_ia_historico (grupo_id, fonte, criado_em desc);
+create index sugestoes_ia_historico_feedback_idx
+  on public.sugestoes_ia_historico (grupo_id, feedback, feedback_em desc)
+  where feedback is not null;
+
+-- ============================================================
 -- 6. Trigger: atualiza atualizado_em automaticamente
 -- ============================================================
 create or replace function public.atualizar_timestamp()
@@ -190,6 +240,7 @@ alter table public.perfis disable row level security;
 alter table public.grupos disable row level security;
 alter table public.lugares disable row level security;
 alter table public.guias disable row level security;
+alter table public.sugestoes_ia_historico disable row level security;
 
 -- ============================================================
 -- 8. Funcao home_summary - agregado para a tela inicial

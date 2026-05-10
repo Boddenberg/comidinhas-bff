@@ -10,6 +10,7 @@ from app.core.errors import ExternalServiceError, NotFoundError
 from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
+from app.modules.decisoes import historico
 from app.modules.decisoes.schemas import (
     CandidatoRestaurante,
     EstadoRecomendacao,
@@ -17,6 +18,7 @@ from app.modules.decisoes.schemas import (
     IntencaoPedido,
     InterpretacaoRecomendacao,
     LocalizacaoRecomendacao,
+    ModoSugestao,
     OrigemCandidato,
     PreferenciaNovidade,
     RecomendacaoRestauranteItem,
@@ -57,9 +59,14 @@ class RecomendarRestaurantesUseCase:
     )
     RANKING_SYSTEM_PROMPT = (
         "Voce e um concierge gastronomico do app Comidinhas. "
-        "Escolha as melhores opcoes entre candidatos estruturados. "
-        "Use somente candidato_id recebido e explique de forma curta e util."
+        "Escolha as melhores opcoes entre candidatos estruturados e escreva "
+        "uma justificativa pessoal, calorosa e especifica para cada uma, "
+        "como se voce conhecesse o gosto deste grupo. "
+        "Use somente candidato_id recebido. Evite frases genericas como "
+        "'combina com o pedido' - destaque um detalhe concreto do lugar e "
+        "conecte com o pedido, com o momento ou com o historico recente."
     )
+    FONTE = "recomendar_restaurantes"
 
     INTERPRETATION_SCHEMA: dict[str, Any] = {
         "type": "object",
@@ -197,7 +204,20 @@ class RecomendarRestaurantesUseCase:
         if grupo is None:
             raise NotFoundError("Grupo nao encontrado.")
 
+        contexto = await historico.carregar_contexto(
+            supabase_client=self._supabase, grupo_id=request.grupo_id
+        )
+
         interpretacao = await self._interpretar(request=request)
+        # Modo explicito do front sobrescreve o que a IA inferiu da mensagem.
+        if request.modo == ModoSugestao.DESCOBERTA:
+            interpretacao = interpretacao.model_copy(
+                update={"preferencia_novidade": PreferenciaNovidade.NOVO}
+            )
+        elif request.modo == ModoSugestao.CONFORTO:
+            interpretacao = interpretacao.model_copy(
+                update={"preferencia_novidade": PreferenciaNovidade.SEGURO}
+            )
         if interpretacao.intencao == IntencaoPedido.FORA_ESCOPO:
             return self._response_refinamento(
                 request=request,
@@ -208,10 +228,21 @@ class RecomendarRestaurantesUseCase:
             )
 
         lugares = await self._carregar_lugares(request=request)
+        contexto.lugares_signal = [
+            {
+                "categoria": lugar.categoria,
+                "bairro": lugar.bairro,
+                "status": lugar.status.value,
+                "favorito": lugar.favorito,
+            }
+            for lugar in lugares
+        ]
+        preferencias = contexto.preferencias_inferidas()
         candidatos_internos = [self._candidato_de_lugar(lugar) for lugar in lugares]
         candidatos_internos = self._ordenar_por_score(
             candidatos=candidatos_internos,
             interpretacao=interpretacao,
+            preferencias=preferencias,
         )
 
         deve_buscar_google = self._deve_buscar_google(
@@ -247,8 +278,17 @@ class RecomendarRestaurantesUseCase:
         candidatos = self._ordenar_por_score(
             candidatos=[*candidatos_internos, *candidatos_google],
             interpretacao=interpretacao,
+            preferencias=preferencias,
         )
         candidatos = candidatos[: max(12, request.max_resultados * 4)]
+        candidatos = self._aplicar_historico(
+            candidatos=candidatos,
+            contexto=contexto,
+            max_resultados=request.max_resultados,
+        )
+        candidatos = self._aplicar_preferencias_filtragem(
+            candidatos=candidatos, preferencias=preferencias
+        )
 
         if not candidatos:
             return self._response_refinamento(
@@ -262,6 +302,8 @@ class RecomendarRestaurantesUseCase:
             request=request,
             interpretacao=interpretacao,
             candidatos=candidatos,
+            contexto=contexto,
+            preferencias=preferencias,
         )
 
         fontes = sorted({item.restaurante.origem for item in ranking}, key=lambda item: item.value)
@@ -284,6 +326,37 @@ class RecomendarRestaurantesUseCase:
             response.total_candidatos,
             [fonte.value for fonte in response.fontes_usadas],
         )
+
+        persisted = await historico.registrar_sugestoes(
+            supabase_client=self._supabase,
+            grupo_id=request.grupo_id,
+            perfil_id=request.perfil_id,
+            fonte=self.FONTE,
+            modelo=self._model,
+            criterios={
+                "mensagem": request.mensagem,
+                "cozinhas": interpretacao.cozinhas,
+                "preferencias": interpretacao.preferencias,
+                "restricoes": interpretacao.restricoes,
+                "estrategia": interpretacao.estrategia.value,
+                "preferencia_novidade": interpretacao.preferencia_novidade.value,
+                "modo": request.modo.value,
+            },
+            sugestoes=[
+                {
+                    "nome": item.restaurante.nome,
+                    "lugar_id": item.restaurante.lugar_id,
+                    "google_place_id": item.restaurante.google_place_id,
+                    "origem": item.restaurante.origem.value,
+                    "motivo": item.motivo,
+                    "categoria": item.restaurante.categoria,
+                    "bairro": item.restaurante.bairro,
+                }
+                for item in response.opcoes
+            ],
+        )
+        self._hidratar_ids(response.opcoes, persistidas=persisted)
+
         return response
 
     async def _interpretar(
@@ -380,13 +453,52 @@ class RecomendarRestaurantesUseCase:
             candidatos.append(self._candidato_de_google(place, localizacao=request.localizacao))
         return candidatos
 
+    @staticmethod
+    def _aplicar_historico(
+        *,
+        candidatos: list[CandidatoRestaurante],
+        contexto: historico.HistoricoContexto,
+        max_resultados: int,
+    ) -> list[CandidatoRestaurante]:
+        if not candidatos:
+            return candidatos
+
+        evitar_lugar_dia = contexto.lugares_evitar_dia()
+        evitar_google_dia = contexto.google_evitar_dia()
+        evitar_lugar_semana = contexto.lugares_evitar_semana()
+        evitar_google_semana = contexto.google_evitar_semana()
+
+        def _no_dia(c: CandidatoRestaurante) -> bool:
+            return (c.lugar_id and c.lugar_id in evitar_lugar_dia) or (
+                c.google_place_id and c.google_place_id in evitar_google_dia
+            )
+
+        def _na_semana(c: CandidatoRestaurante) -> bool:
+            return (c.lugar_id and c.lugar_id in evitar_lugar_semana) or (
+                c.google_place_id and c.google_place_id in evitar_google_semana
+            )
+
+        # 24h: hard exclude.
+        passo_dia = [c for c in candidatos if not _no_dia(c)]
+        # 7d: exclui se ainda sobrar pelo menos max_resultados.
+        if any(_na_semana(c) for c in passo_dia):
+            passo_semana = [c for c in passo_dia if not _na_semana(c)]
+            if len(passo_semana) >= max_resultados:
+                return passo_semana
+        return passo_dia
+
     async def _ranquear_com_ia(
         self,
         *,
         request: RecomendarRestaurantesRequest,
         interpretacao: InterpretacaoRecomendacao,
         candidatos: list[CandidatoRestaurante],
+        contexto: historico.HistoricoContexto,
+        preferencias: historico.PreferenciasInferidas,
     ) -> list[RecomendacaoRestauranteItem]:
+        personalizacao = contexto.resumo_personalizacao()
+        nomes_recentes = [sug.nome for sug in contexto.sugestoes if sug.nome][:8]
+
         prompt = json.dumps(
             {
                 "pedido_original": request.mensagem,
@@ -399,7 +511,19 @@ class RecomendarRestaurantesUseCase:
                     "Se preferencia_novidade for novo, priorize Google ou status quero_ir.",
                     "Evite nao_curti salvo se houver justificativa muito forte.",
                     "Respeite restricoes e orcamento_max quando informados.",
+                    "Os candidatos ja foram filtrados para nao repetir o que foi sugerido nas ultimas 24h - nem cite isso na resposta.",
+                    "Para cada opcao, escreva 'motivo' com 2 a 3 frases pessoais, em portugues, com um detalhe concreto do lugar e uma conexao com o pedido, com o momento ou com o historico recente. Nada de chavoes como 'combina com o pedido' ou 'boa opcao'.",
+                    "Quando fizer sentido, contraste com o historico (ex: 'voces andaram pedindo japones, esta semana topa fugir do padrao com este italiano?').",
+                    "O 'resumo' deve ter uma frase calorosa de abertura, em primeira pessoa.",
                 ],
+                "historico": {
+                    "ultimas": nomes_recentes,
+                    "cozinhas_frequentes": personalizacao.get("cozinhas_frequentes", []),
+                    "moods_frequentes": personalizacao.get("moods_frequentes", []),
+                    "total_sugestoes_30d": personalizacao.get("total_sugestoes_30d", 0),
+                },
+                "preferencias_aprendidas": preferencias.to_prompt(),
+                "modo_solicitado": request.modo.value,
                 "candidatos": [self._candidato_para_prompt(item) for item in candidatos],
             },
             ensure_ascii=False,
@@ -454,13 +578,27 @@ class RecomendarRestaurantesUseCase:
                 RecomendacaoRestauranteItem(
                     restaurante=candidato,
                     motivo=_as_str(raw.get("motivo"))
-                    or "Combina com o pedido e apareceu bem entre os candidatos.",
+                    or self._motivo_default(candidato),
                     pontos_fortes=_string_list(raw.get("pontos_fortes"), limit=3),
                     ressalvas=_string_list(raw.get("ressalvas"), limit=2),
                     confianca=_confidence(raw.get("confianca")),
                 )
             )
         return result
+
+    @staticmethod
+    def _motivo_default(candidato: CandidatoRestaurante) -> str:
+        partes: list[str] = [f"Pensei em {candidato.nome}"]
+        if candidato.bairro:
+            partes.append(f"no {candidato.bairro}")
+        if candidato.categoria:
+            partes.append(f"({candidato.categoria.lower()})")
+        prefacio = " ".join(partes)
+        if candidato.favorito:
+            return f"{prefacio} - ja e favorito de voces e cabe bem no momento."
+        if candidato.novo_no_app:
+            return f"{prefacio} - opcao nova pra fugir um pouco do padrao."
+        return f"{prefacio} - me parece a escolha que mais conversa com o pedido de agora."
 
     def _ranking_fallback(
         self,
@@ -470,7 +608,7 @@ class RecomendarRestaurantesUseCase:
         return [
             RecomendacaoRestauranteItem(
                 restaurante=candidato,
-                motivo="Boa opcao para o pedido informado.",
+                motivo=self._motivo_default(candidato),
                 pontos_fortes=self._pontos_fortes_fallback(candidato),
                 ressalvas=[],
                 confianca=0.62,
@@ -572,10 +710,13 @@ class RecomendarRestaurantesUseCase:
         *,
         candidatos: list[CandidatoRestaurante],
         interpretacao: InterpretacaoRecomendacao,
+        preferencias: historico.PreferenciasInferidas | None = None,
     ) -> list[CandidatoRestaurante]:
         return sorted(
             candidatos,
-            key=lambda item: self._score(item, interpretacao=interpretacao),
+            key=lambda item: self._score(
+                item, interpretacao=interpretacao, preferencias=preferencias
+            ),
             reverse=True,
         )
 
@@ -590,11 +731,56 @@ class RecomendarRestaurantesUseCase:
             return bool(candidatos)
         return any(self._score(candidato, interpretacao=interpretacao) > 1 for candidato in candidatos)
 
+    @staticmethod
+    def _aplicar_preferencias_filtragem(
+        *,
+        candidatos: list[CandidatoRestaurante],
+        preferencias: historico.PreferenciasInferidas,
+    ) -> list[CandidatoRestaurante]:
+        if preferencias.is_empty():
+            return candidatos
+        sem_recusados = [
+            c for c in candidatos
+            if not (c.lugar_id and c.lugar_id in preferencias.lugares_recusados_ids)
+            and not (c.google_place_id and c.google_place_id in preferencias.google_recusados_ids)
+        ]
+        return sem_recusados or candidatos
+
+    @staticmethod
+    def _hidratar_ids(
+        items: list[RecomendacaoRestauranteItem],
+        *,
+        persistidas: list[dict[str, Any]],
+    ) -> None:
+        if not persistidas:
+            return
+        por_lugar: dict[str, str] = {}
+        por_google: dict[str, str] = {}
+        for row in persistidas:
+            sugestao_id = row.get("id")
+            if not isinstance(sugestao_id, str):
+                continue
+            lugar_id = row.get("lugar_id")
+            google_place_id = row.get("google_place_id")
+            if isinstance(lugar_id, str):
+                por_lugar.setdefault(lugar_id, sugestao_id)
+            if isinstance(google_place_id, str):
+                por_google.setdefault(google_place_id, sugestao_id)
+        for item in items:
+            sugestao_id = None
+            if item.restaurante.lugar_id:
+                sugestao_id = por_lugar.get(item.restaurante.lugar_id)
+            if not sugestao_id and item.restaurante.google_place_id:
+                sugestao_id = por_google.get(item.restaurante.google_place_id)
+            if sugestao_id:
+                item.sugestao_id = sugestao_id
+
     def _score(
         self,
         candidato: CandidatoRestaurante,
         *,
         interpretacao: InterpretacaoRecomendacao,
+        preferencias: historico.PreferenciasInferidas | None = None,
     ) -> float:
         text = _normalize(
             " ".join(
@@ -646,6 +832,18 @@ class RecomendarRestaurantesUseCase:
                 score += 1.5
             if candidato.novo_no_app:
                 score -= 1.5
+
+        if preferencias is not None:
+            categoria_norm = (candidato.categoria or "").strip().lower()
+            bairro_norm = (candidato.bairro or "").strip().lower()
+            if categoria_norm and categoria_norm in preferencias.categorias_aceitas:
+                score += 1.5
+            if categoria_norm and categoria_norm in preferencias.categorias_recusadas:
+                score -= 2.0
+            if bairro_norm and bairro_norm in preferencias.bairros_aceitos:
+                score += 0.8
+            if bairro_norm and bairro_norm in preferencias.bairros_recusados:
+                score -= 1.0
 
         return score
 
