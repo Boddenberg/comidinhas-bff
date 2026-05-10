@@ -442,11 +442,68 @@ O backend mantem internamente um historico de cada restaurante oferecido pela IA
   relaxada automaticamente quando nao ha alternativa suficiente);
 - enriquecer o prompt da IA com as cozinhas e moods mais frequentes do grupo
   para que a justificativa fique pessoal ("Esta semana voces foram em mais
-  italianos, hoje proponho algo diferente").
+  italianos, hoje proponho algo diferente");
+- aprender preferencias a partir do feedback explicito do usuario
+  (ver "Feedback" abaixo) e priorizar/penalizar categorias e bairros.
 
 O frontend nao precisa fazer nada novo - basta enviar `grupo_id` (e idealmente
 `perfil_id`). O campo `evitar_lugar_ids` continua disponivel quando o usuario
 pedir explicitamente "decide de novo".
+
+#### Modo descoberta vs conforto
+
+`criterios.modo` (em `decidir-restaurante`) e `modo` (em `recomendar-restaurantes`)
+aceitam:
+
+- `auto` (padrao): a IA decide com base no contexto da mensagem;
+- `descoberta`: prioriza algo novo (status `quero_ir`, lugares nao visitados);
+- `conforto`: prioriza um classico (favoritos, `quero_voltar`).
+
+Use isso para botoes do tipo "Quero algo novo" / "Algo que ja sei que gosto".
+
+#### sugestao_id no retorno
+
+Cada item retornado pelos endpoints de IA agora vem com `sugestao_id`. Guarde
+esse id quando o usuario interagir com aquela sugestao para enviar feedback
+(proxima secao).
+
+## 0.10.1 Feedback de uma sugestao da IA
+
+```http
+POST /ia/sugestoes/{sugestao_id}/feedback
+Content-Type: application/json
+```
+
+Use sempre que o usuario:
+
+- aceitar a sugestao (clicou em "Vamos"): `feedback: "aceito"`
+- recusar (clicou em "Outra"): `feedback: "recusado"`
+- confirmar que foi: `feedback: "fui"`
+
+```json
+{
+  "grupo_id": "uuid-do-contexto",
+  "perfil_id": "uuid-do-perfil-opcional",
+  "feedback": "aceito",
+  "comentario": "amamos! ambiente super agradavel"
+}
+```
+
+Resposta:
+
+```json
+{
+  "sugestao_id": "uuid-sugestao",
+  "grupo_id": "uuid-do-contexto",
+  "feedback": "aceito",
+  "feedback_em": "2026-05-10T22:13:45+00:00",
+  "comentario": "amamos! ambiente super agradavel"
+}
+```
+
+O backend usa esses sinais nas proximas sugestoes - categorias/bairros
+aceitos sobem no ranking, recusados caem (e os recusados explicitos sao
+filtrados das proximas surpresas do mesmo grupo).
 
 ### Exemplo: favoritos
 

@@ -8,6 +8,7 @@ from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
 from app.integrations.supabase.repositories import SupabaseGruposGateway
 from app.modules.chat.use_cases import ChatWithOpenAIUseCase
+from app.modules.decisoes.feedback_use_case import RegistrarFeedbackSugestaoUseCase
 from app.modules.decisoes.recomendacoes import RecomendarRestaurantesUseCase
 from app.modules.decisoes.today_recommendations import TodayRecommendationsUseCase
 from app.modules.decisoes.use_cases import DecidirRestauranteUseCase
@@ -125,6 +126,12 @@ def get_recomendar_restaurantes_use_case(
         supabase_client=supabase_client,
         model=settings.openai_chat_model,
     )
+
+
+def get_registrar_feedback_sugestao_use_case(
+    supabase_client: SupabaseClient = Depends(get_supabase_client),
+) -> RegistrarFeedbackSugestaoUseCase:
+    return RegistrarFeedbackSugestaoUseCase(supabase_client=supabase_client)
 
 
 def get_today_recommendations_use_case(

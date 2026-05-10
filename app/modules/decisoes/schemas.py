@@ -15,6 +15,18 @@ class EscopoDecisao(str, Enum):
     GUIA = "guia"
 
 
+class ModoSugestao(str, Enum):
+    AUTO = "auto"
+    DESCOBERTA = "descoberta"
+    CONFORTO = "conforto"
+
+
+class SugestaoFeedback(str, Enum):
+    ACEITO = "aceito"
+    RECUSADO = "recusado"
+    FUI = "fui"
+
+
 class CriteriosDecisao(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -30,6 +42,7 @@ class CriteriosDecisao(BaseModel):
     observacoes: str | None = Field(default=None, max_length=800)
     priorizar_novidade: bool = False
     surpreender: bool = False
+    modo: ModoSugestao = ModoSugestao.AUTO
 
     @field_validator(
         "dia_semana",
@@ -82,6 +95,7 @@ class DecisaoRestauranteItem(BaseModel):
     pontos_fortes: list[str] = Field(default_factory=list)
     ressalvas: list[str] = Field(default_factory=list)
     confianca: float = Field(default=0.7, ge=0, le=1)
+    sugestao_id: str | None = None
 
 
 class DecidirRestauranteResponse(BaseModel):
@@ -178,6 +192,7 @@ class RecomendarRestaurantesRequest(BaseModel):
     perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
     localizacao: LocalizacaoRecomendacao | None = None
     permitir_google: bool = True
+    modo: ModoSugestao = ModoSugestao.AUTO
     max_resultados: int = Field(default=6, ge=1, le=10)
     max_candidatos_internos: int = Field(default=80, ge=1, le=100)
     max_candidatos_google: int = Field(default=10, ge=1, le=20)
@@ -222,6 +237,7 @@ class RecomendacaoRestauranteItem(BaseModel):
     pontos_fortes: list[str] = Field(default_factory=list)
     ressalvas: list[str] = Field(default_factory=list)
     confianca: float = Field(default=0.7, ge=0, le=1)
+    sugestao_id: str | None = None
 
 
 class RecomendarRestaurantesResponse(BaseModel):
@@ -280,6 +296,7 @@ class TodayRecommendationItem(BaseModel):
     photos: list[dict[str, Any]] = Field(default_factory=list)
     formatted_address: str | None = None
     recommendation_reason: str | None = None
+    sugestao_id: str | None = None
 
 
 class TodayRecommendationsResponse(BaseModel):
@@ -288,6 +305,30 @@ class TodayRecommendationsResponse(BaseModel):
     total_candidates: int = 0
     model: str
     provider: str = "openai"
+
+
+class SugestaoFeedbackRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    grupo_id: str = Field(..., min_length=8, max_length=64)
+    perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
+    feedback: SugestaoFeedback
+    comentario: str | None = Field(default=None, max_length=500)
+
+    @field_validator("grupo_id", "perfil_id", "comentario", mode="before")
+    @classmethod
+    def vazio_para_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class SugestaoFeedbackResponse(BaseModel):
+    sugestao_id: str
+    grupo_id: str
+    feedback: SugestaoFeedback
+    feedback_em: str
+    comentario: str | None = None
 
 
 def _normalizar_lista_texto(value: list[str] | None) -> list[str]:

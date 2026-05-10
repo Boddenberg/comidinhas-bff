@@ -14,6 +14,7 @@ from app.modules.decisoes.schemas import (
     DecidirRestauranteResponse,
     DecisaoRestauranteItem,
     EscopoDecisao,
+    ModoSugestao,
 )
 from app.modules.lugares.schemas import LugarResponse
 from app.modules.lugares.use_cases import ManageLugaresUseCase
@@ -55,6 +56,10 @@ class DecidirRestauranteUseCase:
         contexto = await historico.carregar_contexto(
             supabase_client=self._supabase, grupo_id=request.grupo_id
         )
+        # Os candidatos sao lugares salvos do grupo - servem tambem como
+        # sinal de gosto (favoritos, quero_voltar, nao_curti).
+        contexto.lugares_signal = [self._lugar_signal(lugar) for lugar in candidatos]
+        preferencias = contexto.preferencias_inferidas()
 
         evitar_request = set(request.evitar_lugar_ids)
         evitar_dia = contexto.lugares_evitar_dia()
@@ -107,8 +112,26 @@ class DecidirRestauranteUseCase:
                 len(candidatos),
             )
 
+        # Filtra duro o que o usuario ja recusou.
+        if preferencias.lugares_recusados_ids:
+            sem_recusados = [
+                lugar for lugar in candidatos
+                if lugar.id not in preferencias.lugares_recusados_ids
+            ]
+            if sem_recusados:
+                candidatos = sem_recusados
+
+        # Modo descoberta: prioriza quero_ir e desfavorece o que ja foi visitado.
+        # Modo conforto: prioriza favoritos / quero_voltar.
+        candidatos = self._aplicar_modo(
+            candidatos=candidatos, modo=request.criterios.modo
+        )
+
         prompt = self._build_prompt(
-            request=request, candidatos=candidatos, contexto=contexto
+            request=request,
+            candidatos=candidatos,
+            contexto=contexto,
+            preferencias=preferencias,
         )
         raw_reply = await self._openai.chat(
             prompt=prompt,
@@ -132,7 +155,7 @@ class DecidirRestauranteUseCase:
             len(alternativas),
         )
 
-        await historico.registrar_sugestoes(
+        persisted = await historico.registrar_sugestoes(
             supabase_client=self._supabase,
             grupo_id=request.grupo_id,
             perfil_id=request.perfil_id,
@@ -144,6 +167,7 @@ class DecidirRestauranteUseCase:
                 *(self._sugestao_payload(alt) for alt in alternativas),
             ],
         )
+        self._hidratar_ids([escolha, *alternativas], persistidas=persisted)
 
         return DecidirRestauranteResponse(
             grupo_id=request.grupo_id,
@@ -221,6 +245,7 @@ class DecidirRestauranteUseCase:
         request: DecidirRestauranteRequest,
         candidatos: list[LugarResponse],
         contexto: historico.HistoricoContexto,
+        preferencias: historico.PreferenciasInferidas,
     ) -> str:
         criterios = request.criterios.model_dump(exclude_none=True)
         candidatos_payload = [self._lugar_para_prompt(lugar) for lugar in candidatos]
@@ -239,6 +264,8 @@ class DecidirRestauranteUseCase:
                     "Escreva o motivo em primeira pessoa, com 2 a 3 frases, calorosas, especificas e pessoais.",
                     "Conecte explicitamente a escolha ao mood, clima, dia da semana, ocasiao ou historico quando informados.",
                     "Quando fizer sentido, contraste com sugestoes recentes em historico.ultimas (ex: 'depois de tanta comida pesada esta semana, hoje vamos de algo mais leve').",
+                    "Use 'preferencias_aprendidas' como pista do que funciona e do que nao funciona pra esse grupo - cite implicitamente quando ajudar.",
+                    "Quando criterios.modo for 'descoberta', priorize abertamente algo novo (status quero_ir, categoria pouco frequente). Quando for 'conforto', priorize um classico do grupo (favorito, quero_voltar).",
                     "Liste pontos_fortes que tenham um detalhe sensorial ou pratico (ambiente, prato, bairro, horario), nada generico.",
                     "Se orcamento_max existir, evite escolher lugares acima dele, salvo se for muito justificavel.",
                     "Considere mood, clima, dia da semana, ocasiao, preferencias e restricoes quando informados.",
@@ -252,6 +279,7 @@ class DecidirRestauranteUseCase:
                     "moods_frequentes": personalizacao.get("moods_frequentes", []),
                     "total_sugestoes_30d": personalizacao.get("total_sugestoes_30d", 0),
                 },
+                "preferencias_aprendidas": preferencias.to_prompt(),
                 "formato_resposta": {
                     "escolha": {
                         "lugar_id": "id exato do candidato escolhido",
@@ -274,6 +302,59 @@ class DecidirRestauranteUseCase:
             },
             ensure_ascii=False,
         )
+
+    @staticmethod
+    def _lugar_signal(lugar: LugarResponse) -> dict[str, Any]:
+        return {
+            "categoria": lugar.categoria,
+            "bairro": lugar.bairro,
+            "status": lugar.status.value,
+            "favorito": lugar.favorito,
+        }
+
+    @staticmethod
+    def _aplicar_modo(
+        *,
+        candidatos: list[LugarResponse],
+        modo: ModoSugestao,
+    ) -> list[LugarResponse]:
+        if modo == ModoSugestao.AUTO or not candidatos:
+            return candidatos
+
+        from app.modules.lugares.schemas import StatusLugar
+
+        if modo == ModoSugestao.CONFORTO:
+            preferidos = [
+                lugar for lugar in candidatos
+                if lugar.favorito or lugar.status == StatusLugar.QUERO_VOLTAR
+            ]
+            return preferidos or candidatos
+
+        # DESCOBERTA: tira o que ja foi visitado/curtido se ainda houver opcao.
+        novos = [
+            lugar for lugar in candidatos
+            if lugar.status == StatusLugar.QUERO_IR and not lugar.favorito
+        ]
+        return novos or candidatos
+
+    @staticmethod
+    def _hidratar_ids(
+        items: list[DecisaoRestauranteItem],
+        *,
+        persistidas: list[dict[str, Any]],
+    ) -> None:
+        if not persistidas:
+            return
+        por_lugar: dict[str, str] = {}
+        for row in persistidas:
+            lugar_id = row.get("lugar_id")
+            sugestao_id = row.get("id")
+            if isinstance(lugar_id, str) and isinstance(sugestao_id, str):
+                por_lugar.setdefault(lugar_id, sugestao_id)
+        for item in items:
+            sugestao_id = por_lugar.get(item.lugar.id)
+            if sugestao_id:
+                item.sugestao_id = sugestao_id
 
     @staticmethod
     def _lugar_para_prompt(lugar: LugarResponse) -> dict[str, Any]:
@@ -301,6 +382,8 @@ class DecidirRestauranteUseCase:
             "google_place_id": google_place_id if isinstance(google_place_id, str) else None,
             "origem": "comidinhas",
             "motivo": item.motivo,
+            "categoria": item.lugar.categoria,
+            "bairro": item.lugar.bairro,
         }
 
     def _map_item(self, raw: Any, *, candidatos: list[LugarResponse]) -> DecisaoRestauranteItem:

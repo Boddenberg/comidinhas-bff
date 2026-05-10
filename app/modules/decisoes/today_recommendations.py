@@ -89,6 +89,16 @@ class TodayRecommendationsUseCase:
         contexto = await historico.carregar_contexto(
             supabase_client=self._supabase, grupo_id=request.grupo_id
         )
+        contexto.lugares_signal = [
+            {
+                "categoria": p.categoria,
+                "bairro": p.bairro,
+                "status": p.status.value,
+                "favorito": p.favorito,
+            }
+            for p in saved_places
+        ]
+        preferencias = contexto.preferencias_inferidas()
         nearby = await self._google.search_nearby_restaurants(
             NearbyRestaurantsRequest(
                 latitude=request.latitude,
@@ -102,6 +112,11 @@ class TodayRecommendationsUseCase:
 
         fresh = self._exclude_saved(nearby, saved_places)
         fresh = self._exclude_history(fresh, contexto)
+        if preferencias.google_recusados_ids:
+            fresh = [
+                place for place in fresh
+                if place.id not in preferencias.google_recusados_ids
+            ] or fresh
         candidates = self._quality_candidates(fresh)
         if len(candidates) < request.limit:
             candidates = self._fill_with_available(candidates=candidates, fresh=fresh, limit=request.limit)
@@ -110,6 +125,7 @@ class TodayRecommendationsUseCase:
             request=request,
             candidates=candidates,
             contexto=contexto,
+            preferencias=preferencias,
         )
         by_candidate_id = {f"google:{place.id}": place for place in candidates}
         places = [
@@ -122,7 +138,7 @@ class TodayRecommendationsUseCase:
             if item["candidato_id"] in by_candidate_id
         ][: request.limit]
 
-        await historico.registrar_sugestoes(
+        persisted = await historico.registrar_sugestoes(
             supabase_client=self._supabase,
             grupo_id=request.grupo_id,
             perfil_id=request.perfil_id,
@@ -140,10 +156,13 @@ class TodayRecommendationsUseCase:
                     "google_place_id": place.google_place_id,
                     "origem": "google",
                     "motivo": place.recommendation_reason,
+                    "categoria": place.category,
+                    "bairro": place.neighborhood,
                 }
                 for place in places
             ],
         )
+        self._hidratar_ids(places, persistidas=persisted)
 
         return TodayRecommendationsResponse(
             generated_at=datetime.now(timezone.utc).isoformat(),
@@ -164,12 +183,32 @@ class TodayRecommendationsUseCase:
         )
         return [ManageLugaresUseCase._mapear(row) for row in rows if isinstance(row, dict)]
 
+    @staticmethod
+    def _hidratar_ids(
+        items: list[TodayRecommendationItem],
+        *,
+        persistidas: list[dict],
+    ) -> None:
+        if not persistidas:
+            return
+        por_google: dict[str, str] = {}
+        for row in persistidas:
+            google_place_id = row.get("google_place_id")
+            sugestao_id = row.get("id")
+            if isinstance(google_place_id, str) and isinstance(sugestao_id, str):
+                por_google.setdefault(google_place_id, sugestao_id)
+        for item in items:
+            sugestao_id = por_google.get(item.google_place_id)
+            if sugestao_id:
+                item.sugestao_id = sugestao_id
+
     async def _rank_with_ai(
         self,
         *,
         request: TodayRecommendationsRequest,
         candidates: list[NearbyRestaurant],
         contexto: historico.HistoricoContexto,
+        preferencias: historico.PreferenciasInferidas,
     ) -> list[dict[str, str]]:
         if not candidates:
             return []
@@ -196,6 +235,7 @@ class TodayRecommendationsUseCase:
                     "moods_frequentes": personalizacao.get("moods_frequentes", []),
                     "total_sugestoes_30d": personalizacao.get("total_sugestoes_30d", 0),
                 },
+                "preferencias_aprendidas": preferencias.to_prompt(),
                 "candidatos": [self._candidate_prompt(place) for place in candidates[:15]],
             },
             ensure_ascii=False,

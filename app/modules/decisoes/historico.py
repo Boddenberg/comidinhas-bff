@@ -42,6 +42,10 @@ class HistoricoSugestao:
     criterios: dict[str, Any]
     motivo: str | None
     criado_em: datetime | None
+    feedback: str | None = None
+    feedback_em: datetime | None = None
+    categoria: str | None = None
+    bairro: str | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "HistoricoSugestao":
@@ -54,7 +58,41 @@ class HistoricoSugestao:
             criterios=row.get("criterios") if isinstance(row.get("criterios"), dict) else {},
             motivo=_as_str(row.get("motivo")),
             criado_em=_parse_iso(row.get("criado_em")),
+            feedback=_as_str(row.get("feedback")),
+            feedback_em=_parse_iso(row.get("feedback_em")),
+            categoria=_as_str(row.get("categoria")),
+            bairro=_as_str(row.get("bairro")),
         )
+
+
+@dataclass(frozen=True)
+class PreferenciasInferidas:
+    """Sinais aprendidos a partir de feedback + lugares salvos."""
+
+    categorias_aceitas: list[str] = field(default_factory=list)
+    categorias_recusadas: list[str] = field(default_factory=list)
+    bairros_aceitos: list[str] = field(default_factory=list)
+    bairros_recusados: list[str] = field(default_factory=list)
+    lugares_recusados_ids: set[str] = field(default_factory=set)
+    google_recusados_ids: set[str] = field(default_factory=set)
+
+    def is_empty(self) -> bool:
+        return not (
+            self.categorias_aceitas
+            or self.categorias_recusadas
+            or self.bairros_aceitos
+            or self.bairros_recusados
+            or self.lugares_recusados_ids
+            or self.google_recusados_ids
+        )
+
+    def to_prompt(self) -> dict[str, list[str]]:
+        return {
+            "categorias_aceitas": self.categorias_aceitas,
+            "categorias_recusadas": self.categorias_recusadas,
+            "bairros_aceitos": self.bairros_aceitos,
+            "bairros_recusados": self.bairros_recusados,
+        }
 
 
 @dataclass
@@ -63,6 +101,10 @@ class HistoricoContexto:
 
     sugestoes: list[HistoricoSugestao] = field(default_factory=list)
     agora: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Lugares salvos do grupo (favoritos/visitados/nao_curti) - sao inferidos
+    # como "preferencias positivas" para favoritos e quero_voltar/fomos, e
+    # como "preferencias negativas" para nao_curti.
+    lugares_signal: list[dict[str, Any]] = field(default_factory=list)
 
     def lugares_evitar_dia(self) -> set[str]:
         return self._coletar_ids(horas=WINDOW_DAY_HOURS, somente_principais=False)
@@ -113,6 +155,79 @@ class HistoricoContexto:
             "moods_frequentes": [item for item, _ in moods.most_common(max_itens)],
             "ultimos_nomes": ultimos_nomes[:max_itens],
         }
+
+    def preferencias_inferidas(self, *, max_itens: int = 5) -> PreferenciasInferidas:
+        """Combina feedback de sugestoes + status dos lugares salvos.
+
+        - feedback `aceito` ou `fui` -> sinal positivo;
+        - feedback `recusado` -> sinal negativo (e o lugar entra em
+          `lugares_recusados_ids` para o caller filtrar duro se quiser);
+        - lugares com `favorito=true` ou status `quero_voltar`/`fomos` ->
+          positivo (proxy: o usuario sinalizou que gosta);
+        - lugares com status `nao_curti` -> negativo.
+        """
+        positivos_cat: Counter[str] = Counter()
+        negativos_cat: Counter[str] = Counter()
+        positivos_bairro: Counter[str] = Counter()
+        negativos_bairro: Counter[str] = Counter()
+        lugares_recusados: set[str] = set()
+        google_recusados: set[str] = set()
+        limite = self.agora - timedelta(days=WINDOW_PERSONALIZATION_DAYS)
+
+        # Sinais do feedback explicito.
+        for sug in self.sugestoes:
+            if sug.feedback is None:
+                continue
+            ref = sug.feedback_em or sug.criado_em
+            if ref is None or ref < limite:
+                continue
+            categoria = (sug.categoria or "").strip().lower()
+            bairro = (sug.bairro or "").strip().lower()
+            if sug.feedback in ("aceito", "fui"):
+                if categoria:
+                    positivos_cat[categoria] += 2 if sug.feedback == "fui" else 1
+                if bairro:
+                    positivos_bairro[bairro] += 1
+            elif sug.feedback == "recusado":
+                if categoria:
+                    negativos_cat[categoria] += 1
+                if bairro:
+                    negativos_bairro[bairro] += 1
+                if sug.lugar_id:
+                    lugares_recusados.add(sug.lugar_id)
+                if sug.google_place_id:
+                    google_recusados.add(sug.google_place_id)
+
+        # Sinais dos lugares salvos.
+        for lugar in self.lugares_signal:
+            categoria = (lugar.get("categoria") or "").strip().lower()
+            bairro = (lugar.get("bairro") or "").strip().lower()
+            status = (lugar.get("status") or "").strip().lower()
+            favorito = bool(lugar.get("favorito"))
+            if favorito or status in ("quero_voltar", "fomos"):
+                if categoria:
+                    positivos_cat[categoria] += 2 if favorito else 1
+                if bairro:
+                    positivos_bairro[bairro] += 1
+            elif status == "nao_curti":
+                if categoria:
+                    negativos_cat[categoria] += 2
+                if bairro:
+                    negativos_bairro[bairro] += 1
+
+        # Remove de positivos o que aparece tambem em negativos (sinal misto).
+        for categoria in list(positivos_cat):
+            if negativos_cat[categoria] >= positivos_cat[categoria]:
+                positivos_cat.pop(categoria, None)
+
+        return PreferenciasInferidas(
+            categorias_aceitas=[c for c, _ in positivos_cat.most_common(max_itens)],
+            categorias_recusadas=[c for c, _ in negativos_cat.most_common(max_itens)],
+            bairros_aceitos=[b for b, _ in positivos_bairro.most_common(max_itens)],
+            bairros_recusados=[b for b, _ in negativos_bairro.most_common(max_itens)],
+            lugares_recusados_ids=lugares_recusados,
+            google_recusados_ids=google_recusados,
+        )
 
     def _coletar_ids(self, *, horas: int, somente_principais: bool) -> set[str]:
         limite = self.agora - timedelta(hours=horas)
@@ -177,8 +292,12 @@ async def registrar_sugestoes(
     modelo: str | None,
     criterios: dict[str, Any] | None,
     sugestoes: Iterable[dict[str, Any]],
-) -> None:
-    """Persiste a escolha + alternativas. Falhas sao logadas e ignoradas."""
+) -> list[dict[str, Any]]:
+    """Persiste a escolha + alternativas e devolve as linhas inseridas.
+
+    Falhas sao logadas e ignoradas: nesse caso retornamos lista vazia
+    para o caller, que continua respondendo o usuario sem `sugestao_id`.
+    """
     rows: list[dict[str, Any]] = []
     for index, item in enumerate(sugestoes, start=1):
         nome = _as_str(item.get("nome"))
@@ -200,6 +319,12 @@ async def registrar_sugestoes(
             "posicao": index,
             "criterios": criterios or {},
         }
+        categoria = _as_str(item.get("categoria"))
+        if categoria:
+            row["categoria"] = categoria[:80]
+        bairro = _as_str(item.get("bairro"))
+        if bairro:
+            row["bairro"] = bairro[:80]
         motivo = _as_str(item.get("motivo"))
         if motivo:
             row["motivo"] = motivo[:1200]
@@ -208,10 +333,10 @@ async def registrar_sugestoes(
         rows.append(row)
 
     if not rows:
-        return
+        return []
 
     try:
-        await supabase_client.insert_sugestoes_ia(rows=rows)
+        inseridos = await supabase_client.insert_sugestoes_ia(rows=rows)
     except Exception as exc:  # pragma: no cover - defensivo
         logger.warning(
             "decisoes.historico.persist_failed grupo_id=%s fonte=%s error=%s",
@@ -219,6 +344,10 @@ async def registrar_sugestoes(
             fonte,
             exc,
         )
+        return []
+    if not isinstance(inseridos, list):
+        return []
+    return [row for row in inseridos if isinstance(row, dict)]
 
 
 def _as_str(value: Any) -> str | None:

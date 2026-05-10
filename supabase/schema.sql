@@ -92,6 +92,7 @@ create table public.grupos (
   dono_perfil_id  uuid        references public.perfis (id) on delete set null,
   membros         jsonb       not null default '[]'::jsonb,
   solicitacoes    jsonb       not null default '[]'::jsonb,
+  preferencias_ia jsonb       not null default '{}'::jsonb,
   criado_em       timestamptz not null default now(),
   atualizado_em   timestamptz not null default now()
 );
@@ -183,7 +184,12 @@ create table public.sugestoes_ia_historico (
   criterios       jsonb       not null default '{}'::jsonb,
   motivo          text        check (motivo is null or char_length(motivo) <= 1200),
   modelo          text        check (modelo is null or char_length(modelo) <= 80),
-  criado_em       timestamptz not null default now()
+  criado_em       timestamptz not null default now(),
+  feedback        text        check (feedback is null or feedback in ('aceito', 'recusado', 'fui')),
+  feedback_comentario text    check (feedback_comentario is null or char_length(feedback_comentario) <= 500),
+  feedback_em     timestamptz,
+  categoria       text        check (categoria is null or char_length(categoria) <= 80),
+  bairro          text        check (bairro is null or char_length(bairro) <= 80)
 );
 
 create index sugestoes_ia_historico_grupo_idx
@@ -196,6 +202,9 @@ create index sugestoes_ia_historico_google_idx
   where google_place_id is not null;
 create index sugestoes_ia_historico_fonte_idx
   on public.sugestoes_ia_historico (grupo_id, fonte, criado_em desc);
+create index sugestoes_ia_historico_feedback_idx
+  on public.sugestoes_ia_historico (grupo_id, feedback, feedback_em desc)
+  where feedback is not null;
 
 -- ============================================================
 -- 6. Trigger: atualiza atualizado_em automaticamente

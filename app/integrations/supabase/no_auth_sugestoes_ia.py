@@ -60,3 +60,46 @@ class SupabaseNoAuthSugestoesIaMixin:
                 "supabase", "Supabase nao retornou as sugestoes da IA inseridas."
             )
         return [row for row in response if isinstance(row, dict)]
+
+    async def get_sugestao_ia(self, *, sugestao_id: str) -> dict[str, Any] | None:
+        payload = await self._request_json(
+            "GET",
+            self._build_url("rest", "sugestoes_ia_historico"),
+            headers=self._headers(),
+            params=[("id", f"eq.{sugestao_id}"), ("select", "*")],
+            context="sugestoes_ia_historico_get",
+        )
+        if not isinstance(payload, list):
+            raise ExternalServiceError(
+                "supabase", "Resposta invalida ao buscar sugestao da IA."
+            )
+        first = payload[0] if payload else None
+        return first if isinstance(first, dict) else None
+
+    async def update_sugestao_ia_feedback(
+        self,
+        *,
+        sugestao_id: str,
+        feedback: str,
+        comentario: str | None,
+        feedback_em: str,
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {
+            "feedback": feedback,
+            "feedback_comentario": comentario,
+            "feedback_em": feedback_em,
+        }
+        response = await self._request_json(
+            "PATCH",
+            self._build_url("rest", "sugestoes_ia_historico"),
+            headers={**self._headers(), "Prefer": "return=representation"},
+            params=[("id", f"eq.{sugestao_id}")],
+            json=payload,
+            context="sugestoes_ia_historico_feedback",
+        )
+        if not isinstance(response, list):
+            raise ExternalServiceError(
+                "supabase", "Resposta invalida ao registrar feedback da sugestao."
+            )
+        first = response[0] if response else None
+        return first if isinstance(first, dict) else None
