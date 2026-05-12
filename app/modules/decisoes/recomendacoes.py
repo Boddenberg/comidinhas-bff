@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Any
 
 from app.core.errors import ExternalServiceError, NotFoundError
-from app.integrations.google_places.client import GooglePlacesClient
 from app.integrations.openai.client import OpenAIClient
 from app.integrations.supabase.client import SupabaseClient
 from app.modules.decisoes import historico
@@ -25,13 +24,11 @@ from app.modules.decisoes.schemas import (
     RecomendarRestaurantesRequest,
     RecomendarRestaurantesResponse,
 )
-from app.modules.google_places.schemas import (
-    LocationBias,
-    NearbyRestaurant,
-    TextSearchRestaurantsRequest,
-    TextSearchRankPreference,
+from app.modules.restaurantes_base.repository import BaseRestaurantesRepository
+from app.modules.restaurantes_base.schemas import (
+    BuscarRestaurantesBaseRequest,
+    RestauranteBase,
 )
-from app.modules.google_places.place_types import friendly_place_type
 from app.modules.lugares.schemas import LugarResponse, StatusLugar
 from app.modules.lugares.use_cases import ManageLugaresUseCase
 
@@ -42,14 +39,6 @@ _STATUS_VISITADO = {
     StatusLugar.QUERO_VOLTAR,
     StatusLugar.NAO_CURTI,
 }
-
-_PRICE_LEVEL_MAP = {
-    "PRICE_LEVEL_INEXPENSIVE": 1,
-    "PRICE_LEVEL_MODERATE": 2,
-    "PRICE_LEVEL_EXPENSIVE": 3,
-    "PRICE_LEVEL_VERY_EXPENSIVE": 4,
-}
-
 
 class RecomendarRestaurantesUseCase:
     INTERPRETATION_SYSTEM_PROMPT = (
@@ -62,7 +51,8 @@ class RecomendarRestaurantesUseCase:
         "Escolha as melhores opcoes entre candidatos estruturados e escreva "
         "uma justificativa pessoal, calorosa e especifica para cada uma, "
         "como se voce conhecesse o gosto deste grupo. "
-        "Use somente candidato_id recebido. Evite frases genericas como "
+        "Use somente candidato_id recebido, sem inventar dados externos. "
+        "Evite frases genericas como "
         "'combina com o pedido' - destaque um detalhe concreto do lugar e "
         "conecte com o pedido, com o momento ou com o historico recente."
     )
@@ -87,7 +77,7 @@ class RecomendarRestaurantesUseCase:
                 "type": "string",
                 "enum": [
                     EstrategiaRecomendacao.INTERNA.value,
-                    EstrategiaRecomendacao.GOOGLE.value,
+                    EstrategiaRecomendacao.BASE_CONHECIMENTO.value,
                     EstrategiaRecomendacao.HIBRIDA.value,
                 ],
             },
@@ -179,12 +169,14 @@ class RecomendarRestaurantesUseCase:
         self,
         *,
         openai_client: OpenAIClient,
-        google_client: GooglePlacesClient,
         supabase_client: SupabaseClient,
         model: str,
+        restaurantes_base: BaseRestaurantesRepository | None = None,
+        google_client: Any | None = None,
     ) -> None:
         self._openai = openai_client
-        self._google = google_client
+        self._restaurantes_base = restaurantes_base
+        self._google_client = google_client
         self._supabase = supabase_client
         self._model = model
 
@@ -194,9 +186,10 @@ class RecomendarRestaurantesUseCase:
         request: RecomendarRestaurantesRequest,
     ) -> RecomendarRestaurantesResponse:
         logger.info(
-            "recomendacoes.restaurantes.start grupo_id=%s mensagem_len=%s permitir_google=%s",
+            "recomendacoes.restaurantes.start grupo_id=%s mensagem_len=%s permitir_base=%s permitir_google_legado=%s",
             request.grupo_id,
             len(request.mensagem),
+            request.permitir_base_conhecimento,
             request.permitir_google,
         )
 
@@ -245,38 +238,22 @@ class RecomendarRestaurantesUseCase:
             preferencias=preferencias,
         )
 
-        deve_buscar_google = self._deve_buscar_google(
+        deve_buscar_base = self._deve_buscar_base_conhecimento(
             request=request,
             interpretacao=interpretacao,
             candidatos_internos=candidatos_internos,
         )
-        tem_contexto_local = self._tem_contexto_local(
-            localizacao=request.localizacao,
-            interpretacao=interpretacao,
-        )
-        candidatos_google: list[CandidatoRestaurante] = []
+        candidatos_base: list[CandidatoRestaurante] = []
 
-        if deve_buscar_google and not tem_contexto_local and not self._tem_match_interno(
-            candidatos=candidatos_internos,
-            interpretacao=interpretacao,
-        ):
-            return self._response_refinamento(
-                request=request,
-                estado=EstadoRecomendacao.PRECISA_REFINAR,
-                interpretacao=interpretacao.model_copy(update={"precisa_localizacao": True}),
-                pergunta=interpretacao.pergunta_refinamento
-                or "Quer que eu busque perto de voce? Envie sua localizacao ou uma cidade/bairro.",
-            )
-
-        if deve_buscar_google and tem_contexto_local:
-            candidatos_google = await self._buscar_google(
+        if deve_buscar_base:
+            candidatos_base = await self._buscar_base_conhecimento(
                 request=request,
                 interpretacao=interpretacao,
                 candidatos_internos=candidatos_internos,
             )
 
         candidatos = self._ordenar_por_score(
-            candidatos=[*candidatos_internos, *candidatos_google],
+            candidatos=[*candidatos_internos, *candidatos_base],
             interpretacao=interpretacao,
             preferencias=preferencias,
         )
@@ -373,9 +350,10 @@ class RecomendarRestaurantesUseCase:
             "regras": [
                 "Se o usuario pedir comida, restaurante, bar, cafe ou experiencia gastronomica, use intencao recomendacao_restaurante.",
                 "Extraia cozinhas como arabe, japones, italiano, indiano, brasileiro, mexicano quando existirem.",
-                "Use estrategia hibrida quando fizer sentido combinar lugares salvos e Google Places.",
+                "Use estrategia hibrida quando fizer sentido combinar lugares salvos e a base de conhecimento local.",
+                "Use estrategia base_conhecimento quando o pedido pedir descoberta fora dos lugares ja salvos.",
                 "Use preferencia_novidade novo se o usuario pedir algo novo; seguro se pedir sem erro/garantido; auto se nao especificar.",
-                "Marque precisa_localizacao quando a busca externa depender de onde o usuario esta e nao houver cidade/bairro na mensagem nem localizacao_recebida.",
+                "A base de conhecimento cobre restaurantes de Sao Paulo; nao dependa de Google Maps.",
             ],
         }
         raw = await self._openai.chat_json(
@@ -403,54 +381,59 @@ class RecomendarRestaurantesUseCase:
         )
         return [ManageLugaresUseCase._mapear(row) for row in rows if isinstance(row, dict)]
 
-    def _deve_buscar_google(
+    def _deve_buscar_base_conhecimento(
         self,
         *,
         request: RecomendarRestaurantesRequest,
         interpretacao: InterpretacaoRecomendacao,
         candidatos_internos: list[CandidatoRestaurante],
     ) -> bool:
-        if not request.permitir_google:
+        if self._restaurantes_base is None:
             return False
-        if interpretacao.estrategia == EstrategiaRecomendacao.GOOGLE:
+        if not request.permitir_base_conhecimento:
+            return False
+        if interpretacao.estrategia in {
+            EstrategiaRecomendacao.BASE_CONHECIMENTO,
+            EstrategiaRecomendacao.GOOGLE,
+            EstrategiaRecomendacao.HIBRIDA,
+        }:
             return True
-        if interpretacao.estrategia == EstrategiaRecomendacao.HIBRIDA:
-            return True
-        return len(candidatos_internos) < request.max_resultados
+        return len(candidatos_internos) < request.max_resultados or not self._tem_match_interno(
+            candidatos=candidatos_internos,
+            interpretacao=interpretacao,
+        )
 
-    async def _buscar_google(
+    async def _buscar_base_conhecimento(
         self,
         *,
         request: RecomendarRestaurantesRequest,
         interpretacao: InterpretacaoRecomendacao,
         candidatos_internos: list[CandidatoRestaurante],
     ) -> list[CandidatoRestaurante]:
-        query = self._build_google_query(
+        if self._restaurantes_base is None:
+            return []
+        query = self._build_base_query(
             mensagem=request.mensagem,
             interpretacao=interpretacao,
             localizacao=request.localizacao,
         )
-        places = await self._google.search_text_restaurants(
-            TextSearchRestaurantsRequest(
-                text_query=query,
-                location_bias=self._build_location_bias(request.localizacao),
-                rank_preference=TextSearchRankPreference.RELEVANCE,
-                page_size=request.max_candidatos_google,
+        response = self._restaurantes_base.buscar(
+            request=BuscarRestaurantesBaseRequest(
+                query=query,
+                bairro=request.localizacao.bairro if request.localizacao else None,
+                max_resultados=request.max_candidatos_base_conhecimento,
+                incluir_markdown=False,
             )
         )
 
-        google_ids_salvos = {
-            item.google_place_id
-            for item in candidatos_internos
-            if item.google_place_id
-        }
         nomes_salvos = {_normalize(item.nome) for item in candidatos_internos}
 
         candidatos: list[CandidatoRestaurante] = []
-        for place in places:
-            if place.id in google_ids_salvos or _normalize(place.display_name) in nomes_salvos:
+        for item in response.items:
+            restaurante = item.restaurante
+            if _normalize(restaurante.nome) in nomes_salvos:
                 continue
-            candidatos.append(self._candidato_de_google(place, localizacao=request.localizacao))
+            candidatos.append(self._candidato_de_base(restaurante))
         return candidatos
 
     @staticmethod
@@ -506,15 +489,16 @@ class RecomendarRestaurantesUseCase:
                 "max_opcoes": request.max_resultados,
                 "regras": [
                     "Use somente candidato_id presente em candidatos.",
-                    "Equilibre favoritos/historico com descoberta nova quando a estrategia for hibrida.",
+                    "Equilibre favoritos/historico com descoberta da base local quando a estrategia for hibrida.",
                     "Se preferencia_novidade for seguro, priorize favoritos, fomos ou quero_voltar.",
-                    "Se preferencia_novidade for novo, priorize Google ou status quero_ir.",
+                    "Se preferencia_novidade for novo, priorize base_conhecimento ou status quero_ir.",
                     "Evite nao_curti salvo se houver justificativa muito forte.",
                     "Respeite restricoes e orcamento_max quando informados.",
                     "Os candidatos ja foram filtrados para nao repetir o que foi sugerido nas ultimas 24h - nem cite isso na resposta.",
                     "Para cada opcao, escreva 'motivo' com 2 a 3 frases pessoais, em portugues, com um detalhe concreto do lugar e uma conexao com o pedido, com o momento ou com o historico recente. Nada de chavoes como 'combina com o pedido' ou 'boa opcao'.",
                     "Quando fizer sentido, contraste com o historico (ex: 'voces andaram pedindo japones, esta semana topa fugir do padrao com este italiano?').",
                     "O 'resumo' deve ter uma frase calorosa de abertura, em primeira pessoa.",
+                    "Nao invente horario, nota, endereco ou preco quando o candidato nao tiver esses campos.",
                 ],
                 "historico": {
                     "ultimas": nomes_recentes,
@@ -625,6 +609,8 @@ class RecomendarRestaurantesUseCase:
             pontos.append("Opcao nova para descobrir")
         if candidato.rating:
             pontos.append(f"Avaliacao {candidato.rating:.1f}")
+        if candidato.origem == OrigemCandidato.BASE_CONHECIMENTO:
+            pontos.append("Saiu da base propria do Comidinhas")
         return pontos[:3]
 
     def _response_refinamento(
@@ -673,36 +659,24 @@ class RecomendarRestaurantesUseCase:
             telefone=_as_str(extra.get("phone_number")),
         )
 
-    def _candidato_de_google(
+    def _candidato_de_base(
         self,
-        place: NearbyRestaurant,
-        *,
-        localizacao: LocalizacaoRecomendacao | None,
+        restaurante: RestauranteBase,
     ) -> CandidatoRestaurante:
         return CandidatoRestaurante(
-            candidato_id=f"google:{place.id}",
-            origem=OrigemCandidato.GOOGLE,
-            google_place_id=place.id,
-            nome=place.display_name,
-            categoria=friendly_place_type(
-                place.primary_type,
-                place.primary_type_display_name,
-            ),
-            cidade=localizacao.cidade if localizacao else None,
-            endereco=place.formatted_address,
-            faixa_preco=_map_price_level(place.price_level),
-            rating=place.rating,
-            user_rating_count=place.user_rating_count,
+            candidato_id=f"base:{restaurante.id}",
+            origem=OrigemCandidato.BASE_CONHECIMENTO,
+            base_restaurante_id=restaurante.id,
+            nome=restaurante.nome,
+            categoria=restaurante.tipo or restaurante.categoria,
+            bairro=restaurante.bairro,
+            cidade=restaurante.cidade,
+            endereco=restaurante.endereco,
             favorito=False,
             ja_fomos=False,
             novo_no_app=True,
-            aberto_agora=place.open_now,
-            imagem_capa=place.photo_uri,
-            fotos=[photo.model_dump(mode="json") for photo in place.photos],
-            link=place.google_maps_uri or place.website_uri,
-            google_maps_uri=place.google_maps_uri,
-            website_uri=place.website_uri,
-            telefone=place.phone_number,
+            descricao=restaurante.descricao,
+            fonte_chunk=restaurante.fonte_chunk,
         )
 
     def _ordenar_por_score(
@@ -790,6 +764,7 @@ class RecomendarRestaurantesUseCase:
                     candidato.bairro or "",
                     candidato.cidade or "",
                     candidato.endereco or "",
+                    candidato.descricao or "",
                 ]
             )
         )
@@ -809,6 +784,8 @@ class RecomendarRestaurantesUseCase:
             score -= 4.0
         if candidato.aberto_agora:
             score += 0.7
+        if candidato.origem == OrigemCandidato.BASE_CONHECIMENTO:
+            score += 0.8
         if candidato.rating is not None:
             score += max(0.0, candidato.rating - 3.5)
         if candidato.user_rating_count:
@@ -861,44 +838,20 @@ class RecomendarRestaurantesUseCase:
         return result
 
     @staticmethod
-    def _tem_contexto_local(
-        *,
-        localizacao: LocalizacaoRecomendacao | None,
-        interpretacao: InterpretacaoRecomendacao,
-    ) -> bool:
-        if interpretacao.localizacao_texto:
-            return True
-        if localizacao is None:
-            return False
-        if localizacao.cidade or localizacao.bairro:
-            return True
-        return localizacao.latitude is not None and localizacao.longitude is not None
-
-    @staticmethod
-    def _build_location_bias(localizacao: LocalizacaoRecomendacao | None) -> LocationBias | None:
-        if localizacao is None:
-            return None
-        if localizacao.latitude is None or localizacao.longitude is None:
-            return None
-        return LocationBias(
-            latitude=localizacao.latitude,
-            longitude=localizacao.longitude,
-            radius_meters=float(localizacao.raio_metros),
-        )
-
-    @staticmethod
-    def _build_google_query(
+    def _build_base_query(
         *,
         mensagem: str,
         interpretacao: InterpretacaoRecomendacao,
         localizacao: LocalizacaoRecomendacao | None,
     ) -> str:
-        termos = [*interpretacao.termos_busca, *interpretacao.cozinhas]
-        base = " ".join(termos[:4]).strip()
+        termos = [
+            *interpretacao.termos_busca,
+            *interpretacao.cozinhas,
+            *interpretacao.preferencias,
+        ]
+        base = " ".join(termos[:8]).strip()
         if not base:
             base = mensagem
-        if "restaurante" not in _normalize(base):
-            base = f"restaurante {base}"
 
         local_parts: list[str] = []
         if interpretacao.localizacao_texto:
@@ -931,6 +884,8 @@ class RecomendarRestaurantesUseCase:
             "ja_fomos": candidato.ja_fomos,
             "novo_no_app": candidato.novo_no_app,
             "aberto_agora": candidato.aberto_agora,
+            "descricao": candidato.descricao,
+            "fonte_chunk": candidato.fonte_chunk,
         }
 
 
@@ -971,9 +926,3 @@ def _string_list(value: Any, *, limit: int) -> list[str]:
         return []
     result = [item.strip() for item in value if isinstance(item, str) and item.strip()]
     return result[:limit]
-
-
-def _map_price_level(value: str | None) -> int | None:
-    if not value:
-        return None
-    return _PRICE_LEVEL_MAP.get(value)

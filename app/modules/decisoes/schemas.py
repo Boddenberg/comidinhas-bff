@@ -117,6 +117,7 @@ class IntencaoPedido(str, Enum):
 
 class EstrategiaRecomendacao(str, Enum):
     INTERNA = "interna"
+    BASE_CONHECIMENTO = "base_conhecimento"
     GOOGLE = "google"
     HIBRIDA = "hibrida"
 
@@ -135,6 +136,7 @@ class EstadoRecomendacao(str, Enum):
 
 class OrigemCandidato(str, Enum):
     COMIDINHAS = "comidinhas"
+    BASE_CONHECIMENTO = "base_conhecimento"
     GOOGLE = "google"
 
 
@@ -191,10 +193,12 @@ class RecomendarRestaurantesRequest(BaseModel):
     mensagem: str = Field(..., min_length=1, max_length=1000)
     perfil_id: str | None = Field(default=None, min_length=8, max_length=64)
     localizacao: LocalizacaoRecomendacao | None = None
-    permitir_google: bool = True
+    permitir_base_conhecimento: bool = True
+    permitir_google: bool = False
     modo: ModoSugestao = ModoSugestao.AUTO
     max_resultados: int = Field(default=6, ge=1, le=10)
     max_candidatos_internos: int = Field(default=80, ge=1, le=100)
+    max_candidatos_base_conhecimento: int = Field(default=24, ge=1, le=50)
     max_candidatos_google: int = Field(default=10, ge=1, le=20)
 
     @field_validator("grupo_id", "perfil_id", mode="before")
@@ -210,6 +214,7 @@ class CandidatoRestaurante(BaseModel):
     origem: OrigemCandidato
     lugar_id: str | None = None
     google_place_id: str | None = None
+    base_restaurante_id: str | None = None
     nome: str
     categoria: str | None = None
     bairro: str | None = None
@@ -229,6 +234,8 @@ class CandidatoRestaurante(BaseModel):
     google_maps_uri: str | None = None
     website_uri: str | None = None
     telefone: str | None = None
+    descricao: str | None = None
+    fonte_chunk: str | None = None
 
 
 class RecomendacaoRestauranteItem(BaseModel):

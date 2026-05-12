@@ -14,7 +14,11 @@ from app.modules.decisoes.schemas import (
     RecomendarRestaurantesRequest,
     RecomendarRestaurantesResponse,
 )
-from app.modules.google_places.schemas import NearbyRestaurant
+from app.modules.restaurantes_base.schemas import (
+    BuscarRestaurantesBaseResponse,
+    RestauranteBase,
+    RestauranteBaseResultado,
+)
 
 
 def build_lugar(lugar_id: str, *, nome: str, status: str = "quero_ir", favorito: bool = False) -> dict:
@@ -77,26 +81,36 @@ class FakeOpenAIJsonClient:
         }
 
 
-class FakeGoogleClient:
+class FakeRestaurantesBase:
     def __init__(self) -> None:
         self.requests = []
 
-    async def search_text_restaurants(self, request):  # type: ignore[no-untyped-def]
+    def buscar(self, *, request):  # type: ignore[no-untyped-def]
         self.requests.append(request)
-        return [
-            NearbyRestaurant(
-                id="google-place-1",
-                display_name="Arabe Novo",
-                formatted_address="Rua B, 200 - Sao Paulo",
-                rating=4.7,
-                user_rating_count=320,
-                price_level="PRICE_LEVEL_MODERATE",
-                primary_type="middle_eastern_restaurant",
-                primary_type_display_name="Restaurante arabe",
-                google_maps_uri="https://maps.google.com/?cid=1",
-                open_now=True,
-            )
-        ]
+        return BuscarRestaurantesBaseResponse(
+            query=request.query,
+            total=1,
+            versao="fake",
+            cidade="Sao Paulo",
+            items=[
+                RestauranteBaseResultado(
+                    score=8.5,
+                    trechos=["Restaurante arabe da base propria."],
+                    restaurante=RestauranteBase(
+                        id="arabe-novo",
+                        nome="Arabe Novo",
+                        categoria_id="08-arabe-libanesa-oriente-medio",
+                        categoria="ARABE / LIBANESA / ORIENTE MEDIO",
+                        tipo="Arabe",
+                        endereco="Rua B, 200 - Pinheiros",
+                        bairro="Pinheiros",
+                        cidade="Sao Paulo",
+                        descricao="Restaurante arabe da base propria.",
+                        fonte_chunk="chunks/by_restaurant/999-arabe-novo.md",
+                    ),
+                )
+            ],
+        )
 
 
 class FakeSupabaseClient:
@@ -123,12 +137,12 @@ class FakeSupabaseClient:
 
 
 @pytest.mark.anyio
-async def test_recomendar_restaurantes_mistura_supabase_e_google() -> None:
+async def test_recomendar_restaurantes_mistura_supabase_e_base_conhecimento() -> None:
     fake_openai = FakeOpenAIJsonClient()
-    fake_google = FakeGoogleClient()
+    fake_base = FakeRestaurantesBase()
     use_case = RecomendarRestaurantesUseCase(
         openai_client=fake_openai,  # type: ignore[arg-type]
-        google_client=fake_google,  # type: ignore[arg-type]
+        restaurantes_base=fake_base,  # type: ignore[arg-type]
         supabase_client=FakeSupabaseClient(
             places=[
                 build_lugar(
@@ -160,25 +174,25 @@ async def test_recomendar_restaurantes_mistura_supabase_e_google() -> None:
     assert len(response.opcoes) == 2
     assert {item.restaurante.origem for item in response.opcoes} == {
         OrigemCandidato.COMIDINHAS,
-        OrigemCandidato.GOOGLE,
+        OrigemCandidato.BASE_CONHECIMENTO,
     }
-    assert fake_google.requests
-    assert "arabe" in fake_google.requests[0].text_query
-    assert "Sao Paulo" in fake_google.requests[0].text_query
-    google_option = next(
+    assert fake_base.requests
+    assert "arabe" in fake_base.requests[0].query
+    base_option = next(
         item
         for item in response.opcoes
-        if item.restaurante.origem == OrigemCandidato.GOOGLE
+        if item.restaurante.origem == OrigemCandidato.BASE_CONHECIMENTO
     )
-    assert google_option.restaurante.categoria == "Restaurante arabe"
+    assert base_option.restaurante.categoria == "Arabe"
+    assert base_option.restaurante.base_restaurante_id == "arabe-novo"
 
 
 @pytest.mark.anyio
-async def test_recomendar_restaurantes_sem_localizacao_pede_refinamento() -> None:
-    fake_google = FakeGoogleClient()
+async def test_recomendar_restaurantes_sem_base_e_sem_candidatos_pede_refinamento() -> None:
+    fake_base = FakeRestaurantesBase()
     use_case = RecomendarRestaurantesUseCase(
         openai_client=FakeOpenAIJsonClient(precisa_localizacao=True),  # type: ignore[arg-type]
-        google_client=fake_google,  # type: ignore[arg-type]
+        restaurantes_base=fake_base,  # type: ignore[arg-type]
         supabase_client=FakeSupabaseClient(),  # type: ignore[arg-type]
         model="fake-model",
     )
@@ -187,12 +201,13 @@ async def test_recomendar_restaurantes_sem_localizacao_pede_refinamento() -> Non
         request=RecomendarRestaurantesRequest(
             grupo_id="grupo-123",
             mensagem="estou com vontade de comer arabe hoje",
+            permitir_base_conhecimento=False,
         )
     )
 
     assert response.estado == EstadoRecomendacao.PRECISA_REFINAR
     assert response.pergunta_refinamento
-    assert fake_google.requests == []
+    assert fake_base.requests == []
 
 
 class FakeRecomendarRestaurantesUseCase:
@@ -206,9 +221,9 @@ class FakeRecomendarRestaurantesUseCase:
             opcoes=[
                 RecomendacaoRestauranteItem(
                     restaurante={
-                        "candidato_id": "google:1",
-                        "origem": "google",
-                        "google_place_id": "1",
+                        "candidato_id": "base:arabe-novo",
+                        "origem": "base_conhecimento",
+                        "base_restaurante_id": "arabe-novo",
                         "nome": "Arabe Novo",
                         "novo_no_app": True,
                     },
@@ -217,7 +232,7 @@ class FakeRecomendarRestaurantesUseCase:
                 )
             ],
             total_candidatos=1,
-            fontes_usadas=[OrigemCandidato.GOOGLE],
+            fontes_usadas=[OrigemCandidato.BASE_CONHECIMENTO],
             modelo="fake-model",
         )
 
@@ -241,4 +256,4 @@ def test_recomendar_restaurantes_route_nao_exige_bearer_token() -> None:
 
     assert response.status_code == 200
     assert response.json()["estado"] == "opcoes"
-    assert response.json()["opcoes"][0]["restaurante"]["origem"] == "google"
+    assert response.json()["opcoes"][0]["restaurante"]["origem"] == "base_conhecimento"
