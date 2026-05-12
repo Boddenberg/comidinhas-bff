@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     google_places_photo_max_height: int = Field(default=400, ge=1, le=4800)
     google_places_max_photos_per_place: int = Field(default=10, ge=1, le=10)
 
+    restaurant_knowledge_base_index_path: str = (
+        "app/data/restaurant_knowledge/sao_paulo/index.json"
+    )
+
     guias_ai_enabled: bool = True
     guias_ai_chat_model: str = "gpt-4o-mini"
     guias_ai_classifier_model: str = "gpt-4o-mini"

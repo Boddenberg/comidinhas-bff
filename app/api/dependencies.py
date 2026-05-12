@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import httpx
 from fastapi import Depends, Request
 
@@ -29,6 +31,12 @@ from app.modules.lugares.use_cases import ManageLugaresUseCase
 from app.modules.places.photo_use_cases import ManagePlacePhotosUseCase
 from app.modules.places.use_cases import ManagePlacesUseCase
 from app.modules.profiles.use_cases import ManageProfilesUseCase
+from app.modules.restaurantes_base.repository import BaseRestaurantesRepository
+from app.modules.restaurantes_base.use_cases import (
+    BuscarRestaurantesBaseUseCase,
+    SalvarRestauranteBaseUseCase,
+    RestaurantesBaseStatsUseCase,
+)
 
 
 def get_app_settings() -> Settings:
@@ -62,6 +70,29 @@ def get_google_places_client(
     settings: Settings = Depends(get_app_settings),
 ) -> GooglePlacesClient:
     return GooglePlacesClient(http_client=http_client, settings=settings)
+
+
+def get_restaurantes_base_repository(
+    settings: Settings = Depends(get_app_settings),
+) -> BaseRestaurantesRepository:
+    return _get_restaurantes_base_repository(settings.restaurant_knowledge_base_index_path)
+
+
+@lru_cache
+def _get_restaurantes_base_repository(index_path: str) -> BaseRestaurantesRepository:
+    return BaseRestaurantesRepository(index_path=index_path)
+
+
+def get_buscar_restaurantes_base_use_case(
+    repository: BaseRestaurantesRepository = Depends(get_restaurantes_base_repository),
+) -> BuscarRestaurantesBaseUseCase:
+    return BuscarRestaurantesBaseUseCase(repository=repository)
+
+
+def get_restaurantes_base_stats_use_case(
+    repository: BaseRestaurantesRepository = Depends(get_restaurantes_base_repository),
+) -> RestaurantesBaseStatsUseCase:
+    return RestaurantesBaseStatsUseCase(repository=repository)
 
 
 def get_infobip_client(
@@ -102,6 +133,16 @@ def get_supabase_client(
     return SupabaseClient(http_client=http_client, settings=settings)
 
 
+def get_salvar_restaurante_base_use_case(
+    repository: BaseRestaurantesRepository = Depends(get_restaurantes_base_repository),
+    supabase_client: SupabaseClient = Depends(get_supabase_client),
+) -> SalvarRestauranteBaseUseCase:
+    return SalvarRestauranteBaseUseCase(
+        repository=repository,
+        supabase_client=supabase_client,
+    )
+
+
 def get_decidir_restaurante_use_case(
     openai_client: OpenAIClient = Depends(get_openai_client),
     supabase_client: SupabaseClient = Depends(get_supabase_client),
@@ -116,13 +157,13 @@ def get_decidir_restaurante_use_case(
 
 def get_recomendar_restaurantes_use_case(
     openai_client: OpenAIClient = Depends(get_openai_client),
-    google_client: GooglePlacesClient = Depends(get_google_places_client),
+    restaurantes_base: BaseRestaurantesRepository = Depends(get_restaurantes_base_repository),
     supabase_client: SupabaseClient = Depends(get_supabase_client),
     settings: Settings = Depends(get_app_settings),
 ) -> RecomendarRestaurantesUseCase:
     return RecomendarRestaurantesUseCase(
         openai_client=openai_client,
-        google_client=google_client,
+        restaurantes_base=restaurantes_base,
         supabase_client=supabase_client,
         model=settings.openai_chat_model,
     )

@@ -15,6 +15,7 @@ from app.api.v1.routes.perfis import router as perfis_router
 from app.api.v1.routes.places import router as places_router
 from app.api.v1.routes.profiles import router as profiles_router
 from app.api.v1.routes.recommendations import router as recommendations_router
+from app.api.v1.routes.restaurantes_base import router as restaurantes_base_router
 
 router = APIRouter()
 router.include_router(hello_router, tags=["hello"])
@@ -32,3 +33,4 @@ router.include_router(guias_ai_router)
 router.include_router(guias_router)
 router.include_router(home_router)
 router.include_router(recommendations_router)
+router.include_router(restaurantes_base_router)
